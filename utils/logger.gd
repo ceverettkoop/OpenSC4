@@ -57,11 +57,10 @@ class Logfile:
 	# TODO: Godot doesn't support docstrings for inner classes, GoDoIt (GH-1320)
 	# """Class for log files that can be shared between various modules."""
 	const FILE_BUFFER_SIZE = 30
-	var file = null
+	var file: FileAccess = null
 	var path = ""
 
-	func _init(_path,_queue_mode = QUEUE_MODES.NONE,_path,_queue_mode):
-		file = File.new()
+	func _init(_path,_queue_mode = QUEUE_MODES.NONE):
 		if validate_path(_path):
 			path = _path
 		buffer.resize(FILE_BUFFER_SIZE)
@@ -70,10 +69,10 @@ class Logfile:
 		return path
 
 	func get_write_mode():
-		if not file.file_exists(path):
-			return File.WRITE  # create
+		if not FileAccess.file_exists(path):
+			return FileAccess.WRITE  # create
 		else:
-			return File.READ_WRITE  # append
+			return FileAccess.READ_WRITE  # append
 
 	func validate_path(path):
 		"""Validate the path given as argument, making it possible to write to
@@ -81,8 +80,8 @@ class Logfile:
 		if not (path.is_absolute_path() or path.is_rel_path()):
 			print("[ERROR] [logger] The given path '%s' is not valid." % path)
 			return false
-		var dir = Directory.new()
 		var base_dir = path.get_base_dir()
+		var dir = DirAccess.open(base_dir)
 		if not dir.dir_exists(base_dir):
 			# TODO: Move directory creation to the function that will actually *write*
 			var err = dir.make_dir_recursive(base_dir)
@@ -731,7 +730,7 @@ func load_config(configfile = default_configfile_path):
 	produced by the ConfigFile API.
 	Returns an error code (OK or some ERR_*)."""
 	# Look for the file
-	var dir = Directory.new()
+	var dir = DirAccess.open("configfile")
 	if not dir.file_exists(configfile):
 		warn("Could not load the config in '%s', the file does not exist." % configfile, PLUGIN_NAME)
 		return ERR_FILE_NOT_FOUND

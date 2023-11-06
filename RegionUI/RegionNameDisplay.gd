@@ -1,6 +1,7 @@
 extends GZWinText
 
-func _init(attributes,attributes):
+func _init(attributes: Dictionary):
+	super._init(attributes)
 	self.name = "RegionNameDisplay"
 
 func _ready():

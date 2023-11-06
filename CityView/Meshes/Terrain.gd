@@ -11,7 +11,7 @@ var heightmap : Array
 
 func _ready():
 	#mat.albedo_color = color
-	st.begin(Mesh.PRIMITIVE_TRIANGLE_FAN)
+	st.begin(Mesh.PRIMITIVE_TRIANGLE_STRIP) #triangle fan deprecated in godot 4
 	for v in vertices.size(): 
 		#st.add_color(color)
 		st.add_uv(UVs[v])

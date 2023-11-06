@@ -2,16 +2,16 @@ extends Node
 class_name INI
 
 var sections = {}
-var file_path
+var file_path : String
 
-func _init(path):
+func _init(path: String):
 	file_path = path
-	var file = File.new() 
-	var err = file.open(file_path, File.READ)
+	var file = FileAccess.open(file_path, FileAccess.READ)
+	var err = FileAccess.get_open_error()
 	var current_section = ""
 	if err != OK:
 		Logger.error("Couldn't load file %s. Error: %s " % [file_path, err] )
-		return err
+		return
 	while ! file.eof_reached():
 		var line = file.get_line()
 		line = line.strip_edges(true, true)
@@ -31,8 +31,7 @@ func _init(path):
 	
 
 func save_file():
-	var file = File.new()
-	file.open(file_path, File.WRITE)
+	var file = FileAccess.open(file_path, FileAccess.WRITE)
 	for section in sections.keys():
 		file.store_line('[' + section + ']')
 		for line in sections[section].keys():

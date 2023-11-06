@@ -66,10 +66,10 @@ func load(file, dbdf=null):
 
 func add_to_tree(parent : Node, custom_classes : Dictionary):
 	parent.add_child(self.root)
-	root.set_anchor(MARGIN_LEFT, 0)
-	root.set_anchor(MARGIN_TOP, 0)
-	root.set_anchor(MARGIN_RIGHT, 1)
-	root.set_anchor(MARGIN_BOTTOM, 1)
+	root.set_anchor(SIDE_LEFT, 0)
+	root.set_anchor(SIDE_TOP, 0)
+	root.set_anchor(SIDE_RIGHT, 1)
+	root.set_anchor(SIDE_BOTTOM, 1)
 	var current_element : Control = self.root
 	var last_element : Control = null
 	# We add children to current_element

@@ -40,7 +40,7 @@ var is_pressed : bool = false
 var is_checked : bool = false
 var is_disabled : bool = false
 
-func _init(attributes : Dictionary,attributes_):
+func _init(attributes : Dictionary):
 	var style = attributes.get('style', 'standard')
 	match style:
 		"standard":

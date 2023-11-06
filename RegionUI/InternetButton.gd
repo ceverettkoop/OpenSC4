@@ -1,6 +1,7 @@
 extends GZWinBtn
 
-func _init(attributes,attributes):
+func _init(attributes):
+	super._init(attributes)
 	self.name = "InternetButton"
 	self.connect("clicked",Callable(self,"_on_clicked"))
 

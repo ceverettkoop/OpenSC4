@@ -4,7 +4,7 @@ extends Control
 Once everything is loaded the it changes to Region scene or the DAT explorer
 """
 
-
+var label_node
 var config
 
 var loading_thread : Thread
@@ -26,16 +26,17 @@ func _ready():
 		Core.game_dir = config.sections["paths"]["sc4_files"]
 	else:
 		$dialog.popup_centered(get_viewport_rect().size / 2)
-		await $dialog.popup_hide
+		await $dialog.confirmed
 		config.sections["paths"] = {}
 		config.sections["paths"]["sc4_files"] = Core.game_dir
 		config.save_file()
 	
 	#TODO check if files exist in current Core.game_dir
-	var dir = Directory.new()
+	var dir: DirAccess
+	dir = DirAccess.open(Core.game_dir)
 	var dir_complete = true
 	while not dir_complete:
-		if dir.open(Core.game_dir) == OK:
+		if dir != null:
 			dir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
 			var files = []
 			var file_name = dir.get_next()
@@ -49,9 +50,10 @@ func _ready():
 					for folder in range(len(folders)-1):
 						folder_dir += ("/" + folders[folder])
 					var file_n = folders[-1]
-					var subdir = Directory.new()
+					var subdir: DirAccess
 					print(Core.game_dir+folder_dir)
-					if subdir.open(Core.game_dir+folder_dir) == OK:
+					subdir = DirAccess.open(Core.game_dir+folder_dir)
+					if subdir != null:
 						subdir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
 						var subfile_name = subdir.get_next()
 						var found = false
@@ -86,6 +88,7 @@ func _ready():
 	Logger.info("Loading OpenSC4...")
 	Logger.info("Using %s as game data folder" % Core.game_dir)
 	# Would be nice to start multiple threads here not only one
+	label_node = get_node("%CurrentFileLabel")
 	var err = loading_thread.start(Callable(self,'load_DATs'))
 	if err != OK:
 		Logger.error("Error starting thread: " % err)
@@ -105,7 +108,7 @@ func finish_loading():
 
 func load_single_DAT(dat_file : String):
 	var src = Core.game_dir + "/" + dat_file
-	$CurrentFileLabel.text = "Loading: %s" % src 
+	call_deferred(label_node.set_text("Loading: %s" % src ))
 	var dbpf = DBPF.new(src)
 	#dbpf.DEBUG_show_all_subfiles_to_file(dat_file)
 	Core.add_dbpf(dbpf)

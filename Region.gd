@@ -63,9 +63,10 @@ func _ready():
 	# Count the city files in the region folder
 	# City files end in .sc4
 	var files = []
-	var dir = Directory.new()
+	var dir: DirAccess
 	var region_dir_full_path = Core.get_gamedata_path('Regions/%s/' % REGION_NAME)
-	var err = dir.open(region_dir_full_path)
+	dir = DirAccess.open(region_dir_full_path)
+	var err = DirAccess.get_open_error()
 	if err != OK:
 		Logger.error('Error opening region directory \'%s\': %s' % [region_dir_full_path, err])
 		return
@@ -105,8 +106,8 @@ func _ready():
 	load_ui()
 
 func read_config_bmp():
-	var region_config_file = File.new()
-	region_config_file.open(Core.get_gamedata_path("Regions/%s/config.bmp" % REGION_NAME), File.READ)
+	var region_config_file = FileAccess.open(Core.get_gamedata_path("Regions/%s/config.bmp" % REGION_NAME), FileAccess.READ)
+	#todo error handling
 	var data = region_config_file.get_buffer(region_config_file.get_length())
 	var region_config = Image.new()
 	region_config.load_bmp_from_buffer(data)

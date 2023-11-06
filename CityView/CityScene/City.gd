@@ -25,7 +25,7 @@ func _ready():
 
 func gen_random_terrain(width : int, height : int) -> Array:
 	var heightmap : Array = []
-	var noise = OpenSimplexNoise.new()
+	var noise = FastNoiseLite.new()
 	noise.seed = randi()
 	noise.octaves = 1
 	noise.period = 20

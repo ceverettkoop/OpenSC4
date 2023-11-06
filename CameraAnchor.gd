@@ -1,6 +1,5 @@
 extends CharacterBody2D
 
-var velocity = Vector2(0, 0)
 var viewport = 0
 var margin_w = 0
 var margin_h = 0
@@ -13,6 +12,7 @@ var mouse_position = Vector2(0, 0)
 var move_speed = 16834 # just manually setting it idk
 
 func _ready():
+	velocity = Vector2(0, 0)
 	pass
 
 func _input(event):

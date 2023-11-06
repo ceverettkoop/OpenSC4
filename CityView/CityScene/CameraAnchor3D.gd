@@ -6,10 +6,10 @@ var elevations = [60, 55, 50, 45, 45, 45]
 var AZIMUTH = deg_to_rad(67.5)
 var rotated = 2
 var boot = true
-var velocity = Vector3(0, 0, 0)
 var hold_r = []
 
 func _ready():
+	velocity = Vector3(0, 0, 0)
 	self.transform.origin = Vector3(self.transform.origin.x, get_parent().WATER_HEIGHT, self.transform.origin.z)
 	_set_view()
 	$Camera3D.set_near(-200.0)

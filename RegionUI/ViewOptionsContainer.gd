@@ -1,4 +1,4 @@
 extends GZWinGen
 
-func _init(attributes : Dictionary,attributes):
-	pass
+func _init(attributes : Dictionary):
+	super._init(attributes)

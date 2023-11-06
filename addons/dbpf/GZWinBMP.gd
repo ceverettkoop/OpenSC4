@@ -19,7 +19,7 @@ class_name GZWinBMP
 
 var texture : Texture2D = null
 
-func _init(attributes,attributes_):
+func _init(attributes):
 	if not 'image' in attributes:
 		print(attributes)
 	else:
