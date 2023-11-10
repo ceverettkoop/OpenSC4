@@ -6,7 +6,7 @@ var file_path
 var cfgFile : ConfigFile
 
 func _init(index):
-	pass
+	super._init(index)
 
 func load(file, dbdf=null):
 	super.load(file, dbdf)

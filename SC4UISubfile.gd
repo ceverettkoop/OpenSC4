@@ -31,6 +31,7 @@ func _init(index):
 	colorRegex.compile("\\((?<r>\\d+),(?<g>\\d+),(?<b>\\d+)\\)")
 	imgGIRegex.compile("\\{(?<group>[0-9a-fA-F]{8}),(?<instance>[0-9a-fA-F]{8})\\}")
 	vec2Regex.compile("\\((?<x>-?\\d+),(?<y>-?\\d+)\\)")
+	super._init(index)
 
 func string2color(string : String) -> Color:
 	var result = colorRegex.search(string)

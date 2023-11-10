@@ -8,7 +8,7 @@ var max_text_height = 0
 var formats = []
 
 func _init(index):
-	pass
+	super._init(index)
 
 func load(file, dbdf=null):
 	super.load(file, dbdf)

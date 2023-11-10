@@ -21,7 +21,7 @@ class_name ImageSubfile
 var img
 
 func _init(index):
-	pass
+	super._init(index)
 
 func load(file, dbdf=null):
 	super.load(file, dbdf)

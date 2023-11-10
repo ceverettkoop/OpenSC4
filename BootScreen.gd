@@ -5,6 +5,8 @@ Once everything is loaded the it changes to Region scene or the DAT explorer
 """
 
 var label_node
+var load_progress_node
+var next_scene_node
 var config
 
 var loading_thread : Thread
@@ -88,7 +90,9 @@ func _ready():
 	Logger.info("Loading OpenSC4...")
 	Logger.info("Using %s as game data folder" % Core.game_dir)
 	# Would be nice to start multiple threads here not only one
-	label_node = get_node("%CurrentFileLabel")
+	label_node = $CurrentFileLabel
+	load_progress_node = $LoadProgress
+	next_scene_node = $NextScene
 	var err = loading_thread.start(Callable(self,'load_DATs'))
 	if err != OK:
 		Logger.error("Error starting thread: " % err)
@@ -104,15 +108,17 @@ func load_DATs():
 
 func finish_loading():
 	Logger.info("DBPF files loaded")
-	$NextScene.visible = true
+	next_scene_node.call_deferred("set_visible", true)
 
 func load_single_DAT(dat_file : String):
 	var src = Core.game_dir + "/" + dat_file
-	call_deferred(label_node.set_text("Loading: %s" % src ))
+	label_node.call_deferred("set_text",("Loading: %s" % src ))
 	var dbpf = DBPF.new(src)
 	#dbpf.DEBUG_show_all_subfiles_to_file(dat_file)
 	Core.add_dbpf(dbpf)
-	$LoadProgress.value += 100.0/len(dat_files)
+	Boot.load_progress_val += 100.0 / len(dat_files)
+	#this doesn't seem to actually occur
+	load_progress_node.call_deferred("set_value", Boot.load_progress)
 
 
 func _on_dialog_confirmed():

@@ -9,7 +9,7 @@ var ind
 var keys_dict = {}
 
 func _init(index):
-	pass
+	super._init(index)
 
 func load(file, dbdf=null):
 	super.load(file, dbdf)

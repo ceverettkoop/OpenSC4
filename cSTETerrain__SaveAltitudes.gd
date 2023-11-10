@@ -6,7 +6,7 @@ var height : int
 var altitudes : Array
 
 func _init(index):
-	pass
+	super._init(index)
 
 func load(file, dbpf=null):
 	super.load(file, dbpf)

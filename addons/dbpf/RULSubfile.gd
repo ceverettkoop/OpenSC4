@@ -86,7 +86,7 @@ var RUL_wnes = {}
 var num_ids = 0
 
 func _init(index):
-	pass
+	super._init(index)
 
 func load(file, dbdf=null):
 	"""

@@ -15,7 +15,7 @@ var guid : int = 0
 var mode : String = "god"
 
 func _init(index):
-	pass
+	super._init(index)
 
 func load(file, dbdf=null):
 	super.load(file, dbdf)
