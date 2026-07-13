@@ -26,20 +26,17 @@ func init(filepath : String):
 func _ready():
     display()
 
-func display(): # TODO city edges override other cities causing glitches, can be solved by controlling the draw order or by adding a z value
+func display(): # Draw order (front tiles on top) is handled in Region.gd via z_index so city edges no longer override neighbours
     if city_info.mode == 'god' or not Core.region_settings.get("show_names", true):
         $InfoContainer/CityName.visible = false
     else:
         $InfoContainer/CityName.text = self.city_name
     # Print city size
-    var pos_on_grid = get_parent().map_to_local(Vector2(city_info.location[0], city_info.location[1]))
+    var pos_on_grid = get_parent().region_to_local(Vector2(city_info.location[0], city_info.location[1]))
     #var thumbnail_texture : Texture2D = region_view_thumbnails[0]
     # The height of a tile if it were completely flat
-    #print(region_view_thumbnails[0].get_data().data["height"], region_view_thumbnails[0].get_image().data["width"], "\t", region_view_thumbnails[1].get_image().data["height"], region_view_thumbnails[1].get_image().data["width"])
     var mystery_img = region_view_thumbnails[1].get_image()
     var region_img = region_view_thumbnails[0].get_image()
-    false # mystery_img.lock() # TODOConverter40, Image no longer requires locking, `false` helps to not break one line if/else, so it can freely be removed
-    false # region_img.lock() # TODOConverter40, Image no longer requires locking, `false` helps to not break one line if/else, so it can freely be removed
     var min_h = mystery_img.data["height"]
     var min_w = mystery_img.data["width"]
     for w in range(mystery_img.data["width"]):
@@ -62,6 +59,8 @@ func display(): # TODO city edges override other cities causing glitches, can be
     # Adjust the tile placement
     var extra_height = thumbnail_texture.get_height() - expected_height
     pos_on_grid.y -= extra_height
+    # Shift left by the grid's per-cell x-shear (the -37.3 from CELL_TRANSFORM)
+    # once per cell of plot height, so the thumbnail's diamond lands on its plot.
     pos_on_grid.x -= 37.305 * city_info.size[1]
     self.translate(pos_on_grid)
     $Thumbnail.texture = thumbnail_texture

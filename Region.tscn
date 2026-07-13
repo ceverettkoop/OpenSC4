@@ -17,7 +17,7 @@ script = ExtResource("3")
 script = ExtResource("4")
 
 [node name="MainCamera" type="Camera2D" parent="CameraAnchor"]
-anchor_mode = 0
+anchor_mode = 1
 drag_left_margin = 0.8
 drag_top_margin = 0.8
 drag_right_margin = 0.8

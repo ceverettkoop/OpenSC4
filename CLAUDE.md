@@ -95,24 +95,6 @@ Everything flows through this singleton.
 Single loader `Thread` in `BootScreen` plus `call_deferred` marshaling. **No `Mutex`,
 `Semaphore`, or `WorkerThreadPool` anywhere** — keep it that way unless genuinely necessary.
 
-## Conventions & gotchas
-
-- **Indentation is 4 SPACES everywhere.** Keep the Godot editor's
-  `text_editor/behavior/indent/type` set to **spaces** (size 4). If the editor setting and
-  the files ever disagree, the editor/import rewrites `.gd` files and produces giant
-  whitespace diffs — the setting and the codebase must always match.
-- **Do NOT rename the `Log` autoload to `Logger`.** Godot 4.5+ ships a native `Logger` class
-  that would shadow the autoload and break every `Log.*` call site.
-- In Godot 4, `FileAccess.open()`, `ImageTexture.create_from_image()`, and
-  `Image.create_from_data()` are **STATIC factories** that return the object (or `null` on
-  failure). Never call them instance-style.
-
-## Known issues / TODO
-
-- `City.tscn` embedded shaders were ported to Godot 4 (explicit `hint_depth_texture` uniform,
-  Vulkan 0..1 depth NDC, built-in `PI`) but the water shore-fade has only been verified to
-  compile, not eyeballed in the editor.
-- `utils/debug_ui/loading_icon_spinning.tres` references `load0.png`..`load7.png` that were
-  never committed — orphaned resource.
-- `BootScreen.load_single_DAT` progress-bar update is marked with a
-  `# this doesn't seem to actually occur` comment.
+### Conventions
+**Indentation is 4 SPACES everywhere.** Keep the Godot editor's
+  `text_editor/behavior/indent/type` set to **spaces** (size 4).

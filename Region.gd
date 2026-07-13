@@ -99,11 +99,30 @@ func _ready():
         var width : int = city.city_info.size[0]
         var height : int = city.city_info.size[1]
         for i in range(x, x+width):
-            for j in range(y, y+height): 
+            for j in range(y, y+height):
                 $BaseGrid.cities[i][j] = city
+        # Isometric painter's order: tiles closer to the viewer (larger front
+        # corner x+y) paint on top, so a tile's raised terrain no longer bleeds
+        # over the plot in front of it. Fixes the edge-override glitch noted in
+        # RegionCityView.display().
+        city.z_index = (x + width) + (y + height)
         $BaseGrid.add_child(city)
-    $RadioPlayer.play_music()	
+    focus_camera_on_region()
+    $RadioPlayer.play_music()
     load_ui()
+
+func focus_camera_on_region():
+    # Fit the camera to the whole region once cities are placed. region_w/region_h
+    # are the config.bmp dimensions (one cell per city plot) set in read_config_bmp().
+    # The grid is a sheared lattice, so walk all four corners for the real bbox.
+    var corners = [Vector2(0, 0), Vector2(region_w, 0), Vector2(0, region_h), Vector2(region_w, region_h)]
+    var min_p = $BaseGrid.to_global($BaseGrid.region_to_local(corners[0]))
+    var max_p = min_p
+    for c in corners:
+        var p = $BaseGrid.to_global($BaseGrid.region_to_local(c))
+        min_p = min_p.min(p)
+        max_p = max_p.max(p)
+    $CameraAnchor.focus_on(Rect2(min_p, max_p - min_p))
 
 func read_config_bmp():
     var region_config_file = FileAccess.open(Core.get_gamedata_path("Regions/%s/config.bmp" % REGION_NAME), FileAccess.READ)

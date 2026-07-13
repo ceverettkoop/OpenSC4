@@ -11,14 +11,40 @@ var mouse_position = Vector2(0, 0)
 #var move_speed = viewport.size.x / 4
 var move_speed = 16834 # just manually setting it idk
 
+# Zoom limits/step for the region Camera2D. In Godot 4, Camera2D.zoom is a
+# magnification factor: >1 zooms in, <1 zooms out.
+var zoom_min = 0.1
+var zoom_max = 3.0
+var zoom_step = 1.15
+
+@onready var camera: Camera2D = $MainCamera
+
 func _ready():
     velocity = Vector2(0, 0)
     pass
+
+func _apply_zoom(factor):
+    var z = clamp(camera.zoom.x * factor, zoom_min, zoom_max)
+    camera.zoom = Vector2(z, z)
+
+# Center the camera on world_rect and pick a zoom that fits it in the viewport
+# (with a little margin). Called once after the region's cities are placed.
+func focus_on(world_rect: Rect2):
+    var vp = get_viewport().get_visible_rect().size
+    var fit = min(vp.x / max(world_rect.size.x, 1.0), vp.y / max(world_rect.size.y, 1.0)) * 0.85
+    camera.zoom = Vector2(clamp(fit, zoom_min, zoom_max), clamp(fit, zoom_min, zoom_max))
+    self.global_position = world_rect.position + world_rect.size * 0.5
 
 func _input(event):
     viewport = self.get_viewport()
     margin_w = viewport.size.x / 15
     margin_h = viewport.size.y / 15
+
+    if event is InputEventMouseButton and event.pressed:
+        if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+            _apply_zoom(zoom_step)
+        elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+            _apply_zoom(1.0 / zoom_step)
 
     if event is InputEventMouseMotion:
         if event.position.x < margin_w:
@@ -41,8 +67,9 @@ func _input(event):
     elif Input.is_action_pressed("camera_right"):
         move.x = 1
     
-    # `normalized() * move_speed` so no fast diagonal movement
-    self.velocity = move.normalized() * move_speed
+    # `normalized() * move_speed` so no fast diagonal movement.
+    # Divide by zoom so panning covers the same on-screen distance at any zoom.
+    self.velocity = move.normalized() * move_speed / camera.zoom.x
     
     # reset variables
     move.x = 0
@@ -56,7 +83,7 @@ func right_click_movement():
         mouse_position = get_local_mouse_position()
         move = mouse_position - mouse_right_click_origin
         
-        self.velocity = move.normalized() * move_speed * move.length()/256
+        self.velocity = move.normalized() * move_speed * move.length()/256 / camera.zoom.x
         
         move.x = 0
         move.y = 0
