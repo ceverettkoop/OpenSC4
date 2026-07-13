@@ -236,17 +236,28 @@ func build_instance():
     var textarr = Texture2DArray.new()
     textarr.create_from_images(prepared)
 
+    # Each group's texture is a separate Texture2DArray layer (same order as
+    # `prepared` above). Stash the group's layer index in the vertex COLOR so the
+    # shader can sample the right layer instead of always layer 0 -- otherwise
+    # secondary groups (e.g. a building's semi-transparent shadow quad) render
+    # with the wrong opaque texture and show up as a black box.
     var vertices = PackedVector3Array([])
     var UVs = PackedVector2Array([])
+    var layers = PackedColorArray([])
+    var layer := 0
     for group in self.groups:
+        var lf : float = float(layer) / 255.0
         for vertind in range(group.vertices.size() - 1, -1, -1):
             vertices.append(group.vertices[vertind])
             UVs.append(group.UVs[vertind])
+            layers.append(Color(lf, 0.0, 0.0, 1.0))
+        layer += 1
     var array_mesh : ArrayMesh = ArrayMesh.new()
     var arrays : Array = []
     arrays.resize(ArrayMesh.ARRAY_MAX)
     arrays[ArrayMesh.ARRAY_VERTEX] = vertices
     arrays[ArrayMesh.ARRAY_TEX_UV] = UVs
+    arrays[ArrayMesh.ARRAY_COLOR] = layers
     array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
     return {"mesh": array_mesh, "texture": textarr}
 

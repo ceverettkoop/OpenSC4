@@ -300,7 +300,9 @@ render_mode depth_draw_always;
 uniform sampler2DArray s3dtexture : source_color;
 
 void fragment(){
-	vec4 tex = texture(s3dtexture, vec3(UV, 0.0));
+	// COLOR.r carries the S3D group's texture-array layer (0..255, set in S3DSubfile.build_instance).
+	float layer = round(COLOR.r * 255.0);
+	vec4 tex = texture(s3dtexture, vec3(UV, layer));
 	ALBEDO = tex.rgb;
 	ALPHA = tex.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.9;
