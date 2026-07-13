@@ -70,7 +70,7 @@ func _ready():
 	if err != OK:
 		Log.error('Error opening region directory \'%s\': %s' % [region_dir_full_path, err])
 		return
-	dir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
+	dir.list_dir_begin()
 	while true:
 		var file = dir.get_next()
 		if file == "":

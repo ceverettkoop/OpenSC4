@@ -107,11 +107,11 @@ func load(file, dbdf=null):
 		if att_id == 96: # compressed image, DXT1 4x4 packed, 1-bit alpha 
 			entry.size = ((entry.width * entry.height) / 16)*8
 			var img_data = raw_data.slice(start, start + entry.size-1)
-			entry.img.create_from_data(entry.width, entry.height, false, Image.FORMAT_DXT1, img_data)
+			entry.img = Image.create_from_data(entry.width, entry.height, false, Image.FORMAT_DXT1, img_data)
 		elif att_id == 97: # compressed image, DXT3 4x4 packed, 4-bit alpha 
 			entry.size = ((entry.width * entry.height) / 16)*16
 			var img_data = raw_data.slice(start, start + entry.size-1)
-			entry.img.create_from_data(entry.width, entry.height, false, Image.FORMAT_DXT3, img_data)
+			entry.img = Image.create_from_data(entry.width, entry.height, false, Image.FORMAT_DXT3, img_data)
 		"""elif att_id == 123 or att_id == 125 or att_id == 127: # image with palette (256 colors), 24 and 32 bmp
 			entry.img.load_bmp_from_buffer(img_data)"""
 		assert(entry.img != null) #,"img load failed")
@@ -131,6 +131,5 @@ func _get_int_from_bytes(bytearr):
 	
 func get_as_texture():
 	assert(self.img != null)
-	var ret = ImageTexture.new()
-	ret.create_from_image(self.img) #,2
+	var ret = ImageTexture.create_from_image(self.img)
 	return ret

@@ -1,35 +1,37 @@
-[gd_scene load_steps=23 format=2]
+[gd_scene load_steps=24 format=3 uid="uid://b9m4t6k2p5v8h"]
 
-[ext_resource path="res://CityView/CityScene/City.gd" type="Script" id=1]
-[ext_resource path="res://CityView/CityScene/CameraAnchor3D.gd" type="Script" id=2]
-[ext_resource path="res://CityView/Meshes/Terrain.gd" type="Script" id=3]
-[ext_resource path="res://CityView/Meshes/WaterPlane.gd" type="Script" id=4]
-[ext_resource path="res://CityView/Meshes/TestS3D.gd" type="Script" id=5]
-[ext_resource path="res://CityView/Meshes/TransitTiles.gd" type="Script" id=6]
+[ext_resource type="Script" uid="uid://dk7xbtlelp2m4" path="res://CityView/CityScene/City.gd" id="1"]
+[ext_resource type="Script" uid="uid://vwy3lg2w1bs0" path="res://CityView/CityScene/CameraAnchor3D.gd" id="2"]
+[ext_resource type="Script" uid="uid://bmiwgerd5hopx" path="res://CityView/Meshes/Terrain.gd" id="3"]
+[ext_resource type="Script" uid="uid://c4m24u66antpo" path="res://CityView/Meshes/WaterPlane.gd" id="4"]
+[ext_resource type="Script" uid="uid://bqiei4p18rtan" path="res://CityView/Meshes/TestS3D.gd" id="5"]
+[ext_resource type="Script" uid="uid://dpn38fqa022w6" path="res://CityView/Meshes/TransitTiles.gd" id="6"]
 
-[sub_resource type="Sky" id=15]
-radiance_size = 0
-sky_top_color = Color( 0.909804, 0.92549, 0.933333, 1 )
-sky_horizon_color = Color( 1, 1, 1, 1 )
-ground_bottom_color = Color( 0.909804, 0.92549, 0.933333, 1 )
-ground_horizon_color = Color( 1, 1, 1, 1 )
-texture_size = 0
+[sub_resource type="ProceduralSkyMaterial" id="20"]
+sky_top_color = Color(0.909804, 0.92549, 0.933333, 1)
+sky_horizon_color = Color(1, 1, 1, 1)
+ground_horizon_color = Color(1, 1, 1, 1)
+ground_bottom_color = Color(0.909804, 0.92549, 0.933333, 1)
 
-[sub_resource type="Environment" id=1]
-background_sky = SubResource( 15 )
-background_sky_custom_fov = 92.2
-background_color = Color( 0.317647, 0.341176, 0.352941, 1 )
-background_energy = 0.0
-ambient_light_color = Color( 1, 1, 1, 1 )
+[sub_resource type="Sky" id="15"]
+sky_material = SubResource("20")
+
+[sub_resource type="Environment" id="1"]
+background_mode = 2
+sky = SubResource("15")
+sky_custom_fov = 92.2
+background_color = Color(0.317647, 0.341176, 0.352941, 1)
+background_energy_multiplier = 0.0
+ambient_light_color = Color(1, 1, 1, 1)
 ambient_light_energy = 0.3
 
-[sub_resource type="Shader" id=9]
+[sub_resource type="Shader" id="9"]
 code = "shader_type spatial;
 render_mode depth_draw_always;
 
 uniform sampler2D watermap;
 // 512 to be used as 16 pixels per tile(1 per m) with octaves using 25 and 39.0625
-// first octave means the texture encompasses 32 tiles before repeating, 10.24, 6.55 tiles for octaves 
+// first octave means the texture encompasses 32 tiles before repeating, 10.24, 6.55 tiles for octaves
 // to reduce noticable repeatedness octaves should not repeat at the same interger number of tiles
 uniform sampler2D noise_texture; //512x512 pixel noise texture
 uniform sampler2D noise_normals; //provides prebaked normals
@@ -70,7 +72,7 @@ vec4 noise_values(vec2 coords, int oct){
 	vec2 rand_vec = vec2((2.0*texelFetch(noise_texture, ivec2(53*oct, 47*oct), 0).x -1.0) * noise_angle_ransomness, (2.0*texelFetch(noise_texture, ivec2(47*oct, 53*oct), 0).x -1.0) * noise_angle_ransomness);
 	vec2 flow = ((noise_direction + rand_vec) * (TIME * noise_time_scale))*(lacu_scl+4.0);
 	vec2 pixel_loc = ((coords+flow) * wave_width_scale * (1.0/lacu_scl));//, vec2(2048.0, 2048.0));
-	
+
 	vec4 values = vec4(pixel_loc, pers_str, 1.0);
 	return values;
 }
@@ -86,16 +88,16 @@ void vertex(){
 	noise_height -= (pow(texture(noise_texture, mod(n_val3.rg/1024.0, 1.0)).x, 2.0) * n_val3.b);
 	noise_height = 2.0 * (noise_height / (n_val1.b + n_val2.b + n_val3.b)) - 1.0;
 	VERTEX.y += noise_height*wave_height_scale;
-	
+
 }
 
 void fragment(){
-	
+
 	float depth = texture(DEPTH_TEXTURE, SCREEN_UV).r;
 	vec3 ndc = vec3(SCREEN_UV, depth) * 2.0 - 1.0;
 	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
 	view.xyz /= view.w;
-	
+
 	float delta_depth = abs((view.z) - (VERTEX.z));
 	float depth_alpha = 1.0;
 	if (delta_depth < 6.0){
@@ -120,7 +122,7 @@ void fragment(){
 			depth_alpha += break_col.r;
 		}
 	}
-	
+
 	RIM = rim;
 	METALLIC = metallic;
 	ROUGHNESS = roughness;
@@ -129,61 +131,60 @@ void fragment(){
 	//ALBEDO = vec3(normalize(noisenormal))*.5+.5;
 }"
 
-[sub_resource type="ShaderMaterial" id=10]
-shader = SubResource( 9 )
-shader_param/noise_octaves = 3
-shader_param/noise_persistance = 0.77
-shader_param/noise_lacunarity = 0.615
-shader_param/noise_angle_ransomness = 10.0
-shader_param/noise_direction = Vector2( -0.5, -0.4 )
-shader_param/noise_time_scale = 0.007
-shader_param/wave_height_scale = 0.09
-shader_param/wave_width_scale = 100.0
-shader_param/normal_horizontal = 1.156
-shader_param/normal_vertical = 1.0
-shader_param/beach_wave_str = 70.0
-shader_param/beach_wave_threshold = 0.372
-shader_param/open_wave_str = 50.0
-shader_param/open_wave_threshold = 0.348
-shader_param/zoom = null
-shader_param/tiling_factor = null
-shader_param/max_depth = null
-shader_param/depth_range = null
-shader_param/water_fog_density = 1.668
-shader_param/rim = 0.0
-shader_param/metallic = 0.0
-shader_param/roughness = 0.0
+[sub_resource type="ShaderMaterial" id="10"]
+shader = SubResource("9")
+shader_parameter/noise_octaves = 3
+shader_parameter/noise_persistance = 0.77
+shader_parameter/noise_lacunarity = 0.615
+shader_parameter/noise_angle_ransomness = 10.0
+shader_parameter/noise_direction = Vector2(-0.5, -0.4)
+shader_parameter/noise_time_scale = 0.007
+shader_parameter/wave_height_scale = 0.09
+shader_parameter/wave_width_scale = 100.0
+shader_parameter/normal_horizontal = 1.156
+shader_parameter/normal_vertical = 1.0
+shader_parameter/beach_wave_str = 70.0
+shader_parameter/beach_wave_threshold = 0.372
+shader_parameter/open_wave_str = 50.0
+shader_parameter/open_wave_threshold = 0.348
+shader_parameter/zoom = null
+shader_parameter/tiling_factor = null
+shader_parameter/max_depth = null
+shader_parameter/depth_range = null
+shader_parameter/water_fog_density = 1.668
+shader_parameter/rim = 0.0
+shader_parameter/metallic = 0.0
+shader_parameter/roughness = 0.0
 
-[sub_resource type="OpenSimplexNoise" id=11]
+[sub_resource type="FastNoiseLite" id="11"]
 seed = 23
-octaves = 1
-persistence = 0.64
-lacunarity = 0.64
+frequency = 0.015625
+fractal_octaves = 1
+fractal_lacunarity = 0.64
+fractal_gain = 0.64
 
-[sub_resource type="NoiseTexture" id=12]
-flags = 0
+[sub_resource type="NoiseTexture2D" id="12"]
 width = 1024
 height = 1024
 seamless = true
-noise = SubResource( 11 )
+noise = SubResource("11")
 
-[sub_resource type="OpenSimplexNoise" id=13]
+[sub_resource type="FastNoiseLite" id="13"]
 seed = 23
-octaves = 1
-period = 32.0
-persistence = 0.64
-lacunarity = 0.64
+frequency = 0.03125
+fractal_octaves = 1
+fractal_lacunarity = 0.64
+fractal_gain = 0.64
 
-[sub_resource type="NoiseTexture" id=14]
-flags = 22
+[sub_resource type="NoiseTexture2D" id="14"]
 width = 1024
 height = 1024
 seamless = true
 as_normal_map = true
 bump_strength = 10.0
-noise = SubResource( 13 )
+noise = SubResource("13")
 
-[sub_resource type="Shader" id=4]
+[sub_resource type="Shader" id="4"]
 code = "shader_type spatial;
 render_mode depth_draw_always;
 
@@ -203,16 +204,16 @@ uniform float beach_ht_range;
 varying float norm_x;
 varying float norm_y;
 varying float norm_z;
-varying flat float layer_i_0; 
-varying flat float layer_i_1; 
-varying flat float layer_i_2; 
+varying flat float layer_i_0;
+varying flat float layer_i_1;
+varying flat float layer_i_2;
 varying float beach_str;
 //varying flat vec3 normal;
 
 void vertex()
 {
 	coord_pass = VERTEX.xyz;
-	
+
 	map_str = (texelFetch(watermap, ivec2(coord_pass.zx), 0).r*beach_ht_range);
 	vec3 w_norm = normalize((vec4(NORMAL, 0.0)).rgb);
 	norm_x = w_norm.x;
@@ -235,7 +236,7 @@ void fragment()
 {
 	float zoom_ind = min( float(zoom-1), 4.0);
 	vec2 coord = coord_pass.xz;
-	
+
 	float layer_w_0 = COLOR.r;
 	float layer_w_1 = COLOR.g;
 	float layer_w_2 = COLOR.b;
@@ -243,9 +244,9 @@ void fragment()
 	ivec2 icoord1 = ivec2(coord);
 	ivec2 icoord2 = icoord1 + ivec2(0, 1);
 	ivec2 icoord3 = icoord1 + ivec2(1, 0);
-	
+
 	vec3 beach_col = texture(terrain, vec3(UV.y*tiling_factor, UV.x*tiling_factor, float(zoom_ind)+beach_ind)).rgb;
-		
+
 	vec2 rem1 = abs(vec2(icoord1) - coord);
 	vec2 rem2 = abs(vec2(icoord2) - coord);
 	vec2 rem3 = abs(vec2(icoord3) - coord);
@@ -281,18 +282,18 @@ void fragment()
 				(
 				(
 					(col1 + col2 + col3) * (1.0-over_str)
-					) 
+					)
 				+ (overlay * over_str)
 				)
 			) * grid;
 	//ALBEDO = vec3(normal.g)*2.0-1.0;
-	
+
 	}"
 
-[sub_resource type="ShaderMaterial" id=5]
-shader = SubResource( 4 )
+[sub_resource type="ShaderMaterial" id="5"]
+shader = SubResource("4")
 
-[sub_resource type="Shader" id=16]
+[sub_resource type="Shader" id="16"]
 code = "shader_type spatial;
 render_mode depth_draw_always;
 
@@ -309,11 +310,11 @@ void fragment(){
 }
 	"
 
-[sub_resource type="ShaderMaterial" id=17]
-shader = SubResource( 16 )
-shader_param/direction = Vector2( 40, 20 )
+[sub_resource type="ShaderMaterial" id="17"]
+shader = SubResource("16")
+shader_parameter/direction = Vector2(40, 20)
 
-[sub_resource type="Shader" id=7]
+[sub_resource type="Shader" id="7"]
 code = "shader_type spatial;
 render_mode depth_draw_always;
 
@@ -331,7 +332,7 @@ void vertex()
 {
 	height_var = VERTEX.y;
 	height_flat = VERTEX.y;
-	
+
 }
 
 void fragment()
@@ -341,7 +342,7 @@ void fragment()
 	if (UV.y > 0.3152){
 		edge_tex = bot_ind;
 		}
-	else{  
+	else{
 		if(UV.y > 0.1576){
 			edge_tex = mid_ind;
 		}
@@ -359,15 +360,15 @@ void fragment()
 	ALBEDO = texture(terrain, vec3(uvx, uvy, float(zoom_ind)+edge_tex)).rgb;
 }"
 
-[sub_resource type="ShaderMaterial" id=8]
-shader = SubResource( 7 )
-shader_param/zoom = null
-shader_param/tiling_factor = null
-shader_param/top_ind = null
-shader_param/mid_ind = null
-shader_param/bot_ind = null
+[sub_resource type="ShaderMaterial" id="8"]
+shader = SubResource("7")
+shader_parameter/zoom = null
+shader_parameter/tiling_factor = null
+shader_parameter/top_ind = null
+shader_parameter/mid_ind = null
+shader_parameter/bot_ind = null
 
-[sub_resource type="Shader" id=18]
+[sub_resource type="Shader" id="18"]
 code = "shader_type spatial;
 render_mode depth_draw_always;
 
@@ -382,7 +383,7 @@ void vertex(){
 		built = 1.0;
 		}
 	index = (UV2.r) + (floor(mod(UV2.g, 128.0)) * 256.0);
-	
+
 }
 
 void fragment(){
@@ -397,15 +398,15 @@ void fragment(){
 	ALPHA = alpha;
 }"
 
-[sub_resource type="ShaderMaterial" id=19]
+[sub_resource type="ShaderMaterial" id="19"]
 render_priority = 1
-shader = SubResource( 18 )
+shader = SubResource("18")
 
 [node name="City" type="Node3D"]
-script = ExtResource( 1 )
+script = ExtResource("1")
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
-transform = Transform3D( 1, 0, 0, 0, 1, 7.81531e-08, 0, -7.81531e-08, 1, 0, 0, 0 )
+transform = Transform3D(1, 0, 0, 0, 1, 7.81531e-08, 0, -7.81531e-08, 1, 0, 0, 0)
 light_specular = 0.0
 light_bake_mode = 0
 shadow_enabled = true
@@ -413,19 +414,15 @@ shadow_bias = 1.422
 directional_shadow_mode = 0
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
-environment = SubResource( 1 )
-__meta__ = {
-"_editor_description_": "Default environment"
-}
+environment = SubResource("1")
 
 [node name="Node3D" type="Node3D" parent="."]
-transform = Transform3D( 1, 0, 0, 0, 1, 0, 0, 0, 1, -64, 0, -64 )
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -64, 0, -64)
 
 [node name="WaterPlane" type="MeshInstance3D" parent="Node3D"]
-material_override = SubResource( 10 )
+material_override = SubResource("10")
 skeleton = NodePath("../..")
-software_skinning_transform_normals = false
-script = ExtResource( 4 )
+script = ExtResource("4")
 
 [node name="NoiseTexture" type="TextureRect" parent="Node3D/WaterPlane"]
 visible = false
@@ -433,7 +430,7 @@ offset_left = 107.0
 offset_top = 169.0
 offset_right = 1131.0
 offset_bottom = 1193.0
-texture = SubResource( 12 )
+texture = SubResource("12")
 
 [node name="NoiseNormals" type="TextureRect" parent="Node3D/WaterPlane"]
 visible = false
@@ -441,31 +438,28 @@ offset_left = -407.0
 offset_top = 170.0
 offset_right = 617.0
 offset_bottom = 1194.0
-texture = SubResource( 14 )
+texture = SubResource("14")
 
 [node name="Terrain" type="MeshInstance3D" parent="Node3D"]
-material_override = SubResource( 5 )
+material_override = SubResource("5")
 skeleton = NodePath("../..")
-software_skinning_transform_normals = false
-script = ExtResource( 3 )
+script = ExtResource("3")
 
 [node name="TestS3D" type="MeshInstance3D" parent="Node3D"]
-material_override = SubResource( 17 )
-software_skinning_transform_normals = false
-script = ExtResource( 5 )
+material_override = SubResource("17")
+script = ExtResource("5")
 
 [node name="Border" type="MeshInstance3D" parent="Node3D"]
-material_override = SubResource( 8 )
+material_override = SubResource("8")
 cast_shadow = 2
-software_skinning_transform_normals = false
 
 [node name="TransitTiles" type="MeshInstance3D" parent="Node3D"]
-material_override = SubResource( 19 )
-script = ExtResource( 6 )
+material_override = SubResource("19")
+script = ExtResource("6")
 
 [node name="CameraHandler" type="CharacterBody3D" parent="."]
-transform = Transform3D( -0.924, 0, 0.191, 0, -1, 0.866, 0.383, 1, 0.462, 0, 15.625, 0 )
-script = ExtResource( 2 )
+transform = Transform3D(-0.924, 0, 0.191, 0, -1, 0.866, 0.383, 1, 0.462, 0, 15.625, 0)
+script = ExtResource("2")
 
 [node name="Camera3D" type="Camera3D" parent="CameraHandler"]
 projection = 1
@@ -474,10 +468,7 @@ size = 292.0
 near = 1.0
 far = 200.0
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="CharacterBody3D"]
-environment = SubResource( 1 )
-__meta__ = {
-"_editor_description_": "Default environment"
-}
+[node name="WorldEnvironment" type="WorldEnvironment" parent="CameraHandler"]
+environment = SubResource("1")
 
 [node name="UICanvas" type="CanvasLayer" parent="."]

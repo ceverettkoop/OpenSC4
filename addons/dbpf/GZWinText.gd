@@ -8,7 +8,7 @@ var default_font_size = ThemeDB.fallback_font_size
 func _init(attributes):
 	# hack to get the default font while we can't decode the Simcity 4 ones
 	var label = Label.new()
-	self.font = label.get_font("")
+	self.font = label.get_theme_font("font")
 	label.free()
 	self.set_text(attributes.get('caption', ''))
 	if attributes.has('captionres'):

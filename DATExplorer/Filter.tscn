@@ -1,4 +1,4 @@
-[gd_scene format=2]
+[gd_scene format=3 uid="uid://b4n7x2w9j5h3r"]
 
 [node name="TypeFilter" type="VBoxContainer"]
 offset_right = 64.0

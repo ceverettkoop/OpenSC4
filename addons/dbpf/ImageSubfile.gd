@@ -36,6 +36,5 @@ func load(file, dbdf=null):
 
 func get_as_texture():
 	assert(self.img != null)
-	var ret = ImageTexture.new()
-	ret.create_from_image(self.img) #,0
+	var ret = ImageTexture.create_from_image(self.img)
 	return ret

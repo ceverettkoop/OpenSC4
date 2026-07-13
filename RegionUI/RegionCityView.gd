@@ -57,8 +57,7 @@ func display(): # TODO city edges override other cities causing glitches, can be
 				region_img.set_pixel(w, h, Color(0.0, 0.0, 0.0, 0.0))
 	#var trim = Rect2(Vector2(float(min_w), float(min_h)), Vector2(mystery_img.data["width"], mystery_img.data["height"]))
 	#var trimmed = region_img.get_rect(trim)
-	var thumbnail_texture = ImageTexture.new()
-	thumbnail_texture.create_from_image(region_img) #,0
+	var thumbnail_texture = ImageTexture.create_from_image(region_img)
 	var expected_height = 63.604 * city_info.size[1]
 	# Adjust the tile placement
 	var extra_height = thumbnail_texture.get_height() - expected_height

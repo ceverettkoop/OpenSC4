@@ -115,12 +115,10 @@ func generate_wateredges(HeightMap):
 			watermap_inv.append(watermap[j-2])
 			watermap_inv.append(watermap[j-3])
 	
-	var shoreimg = Image.new()
-	shoreimg.create_from_data(len(HeightMap), len(HeightMap[0]), false, Image.FORMAT_RGBA8, watermap_inv)
+	var shoreimg = Image.create_from_data(len(HeightMap), len(HeightMap[0]), false, Image.FORMAT_RGBA8, watermap_inv)
 	#shoreimg.flip_x()
 	#shoreimg.flip_y()
-	var shoretex = ImageTexture.new()
-	shoretex.create_from_image(shoreimg) #,0
+	var shoretex = ImageTexture.create_from_image(shoreimg)
 	mat = self.get_material_override()
 	mat.set_shader_parameter("watermap", shoretex)
 	mat.set_shader_parameter("watertexture", water_text)

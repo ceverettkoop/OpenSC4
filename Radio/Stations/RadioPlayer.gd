@@ -29,7 +29,7 @@ func load_music_files():
 	if err != OK:
 		print('Error opening radio directory: %s' % err)
 		return
-	dir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
+	dir.list_dir_begin()
 	while true:
 		var file = dir.get_next()
 		if file == "":

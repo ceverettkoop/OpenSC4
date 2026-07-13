@@ -39,7 +39,7 @@ func _ready():
 	var dir_complete = true
 	while not dir_complete:
 		if dir != null:
-			dir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
+			dir.list_dir_begin()
 			var files = []
 			var file_name = dir.get_next()
 			while file_name != "":
@@ -56,7 +56,7 @@ func _ready():
 					print(Core.game_dir+folder_dir)
 					subdir = DirAccess.open(Core.game_dir+folder_dir)
 					if subdir != null:
-						subdir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
+						subdir.list_dir_begin()
 						var subfile_name = subdir.get_next()
 						var found = false
 						while subfile_name != "":
