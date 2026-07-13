@@ -14,7 +14,7 @@ func load(file, dbdf=null):
 
 #	var current_section = ""
 #	if err != OK:
-#		Logger.error("Couldn't load file %s. Error: %s " % file_path, err )
+#		Log.error("Couldn't load file %s. Error: %s " % file_path, err )
 #		return err
 #	while ! file.eof_reached():
 #		var line = file.get_line()
@@ -38,7 +38,7 @@ func get_as_cfg():
 	var sections = {}
 	var err = cfgFile.load(raw_data.get_string_from_ascii())
 	if err != OK:
-		Logger.error("Couldnt load as INI!")
+		Log.error("Couldnt load as INI!")
 		return {}
 	else:
 		pass

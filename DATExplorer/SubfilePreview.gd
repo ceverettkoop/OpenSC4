@@ -25,7 +25,7 @@ func display_subfile(type_id : int, group_id : int, instance_id : int) -> void:
 	if type == 'text':
 		# TODO: also display the source code
 		if group_id == 0x96A006B0 or group_id == 0x08000600: # UI subfile
-			Logger.info("Previewing a UI file")
+			Log.info("Previewing a UI file")
 			var file = Core.subfile(type_id, group_id, instance_id, SC4UISubfile)
 			# If the file had already been loaded, then the root won't be null
 			if file.root != null:

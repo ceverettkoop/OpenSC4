@@ -47,7 +47,7 @@ func base_load():
 	# We assume dbpf_files is already filled with the files full paths
 	# we use full paths to avoid clashing between two files with the same name in different directories
 	for dbpf in Core.dbpf_files.values():
-		Logger.info("Processing %s" % dbpf.path)
+		Log.info("Processing %s" % dbpf.path)
 		typeid_count[dbpf.path] = {}
 		typeid_treeitems[dbpf.path] = {}
 		var file_treeitem = tree.create_item(root)
@@ -74,7 +74,7 @@ func base_load():
 		# In each tree_item, write the amount of subfiles of that type
 		for type_id in typeid_count[dbpf.path].keys():
 			typeid_treeitems[dbpf.path][type_id].set_text(2, "%s subfiles" % typeid_count[dbpf.path][type_id])
-	Logger.info("Done loading all files")
+	Log.info("Done loading all files")
 
 func check_filter(index : SubfileIndex) -> bool:
 	return  (index.type_id & filter_type_mask) == filter_type_id & filter_type_mask\
@@ -85,7 +85,7 @@ func check_filter(index : SubfileIndex) -> bool:
 
 func add_subfile_to_tree(dbpf : DBPF, index : SubfileIndex) -> void:
 	if typeid_treeitems[dbpf.path].has(index.type_id) == false:
-		Logger.error("Type ID %d not found in file %s" % [index.type_id, dbpf.path])
+		Log.error("Type ID %d not found in file %s" % [index.type_id, dbpf.path])
 		return
 	var child = tree.create_item(typeid_treeitems[dbpf.path][index.type_id])
 	child.set_text(0, SubfileTGI.get_file_type(index.type_id, index.group_id, index.instance_id))
@@ -102,12 +102,12 @@ func _on_ApplyFilter_pressed():
 	filter_instance_mask = ("0x%s" % $Filters/Instance/Mask.text).hex_to_int()
 
 	# Debug: log the filters to check conversion is correct
-	Logger.info("Filter type ID:       0x%08x" % filter_type_id)
-	Logger.info("Filter type mask:     0x%08x" % filter_type_mask)
-	Logger.info("Filter group ID:      0x%08x" % filter_group_id)
-	Logger.info("Filter group mask:    0x%08x" % filter_group_mask)
-	Logger.info("Filter instance ID:   0x%08x" % filter_instance_id)
-	Logger.info("Filter instance mask: 0x%08x" % filter_instance_mask)
+	Log.info("Filter type ID:       0x%08x" % filter_type_id)
+	Log.info("Filter type mask:     0x%08x" % filter_type_mask)
+	Log.info("Filter group ID:      0x%08x" % filter_group_id)
+	Log.info("Filter group mask:    0x%08x" % filter_group_mask)
+	Log.info("Filter instance ID:   0x%08x" % filter_instance_id)
+	Log.info("Filter instance mask: 0x%08x" % filter_instance_mask)
 
 	# Clear the files in the tree
 	for dbpf in Core.dbpf_files.values():

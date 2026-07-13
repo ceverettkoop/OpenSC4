@@ -24,7 +24,7 @@ config/icon="res://splash.png"
 
 Boot="*res://Boot.gd"
 Core="*res://Core.gd"
-Logger="*res://utils/logger.gd"
+Log="*res://utils/logger.gd"
 DebugUtils="*res://utils/debug_utils.gd"
 
 [display]

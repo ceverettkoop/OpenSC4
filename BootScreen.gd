@@ -87,15 +87,15 @@ func _ready():
 	$dialog.deselect_all()
 	$LoadProgress.value = 0
 	loading_thread = Thread.new()
-	Logger.info("Loading OpenSC4...")
-	Logger.info("Using %s as game data folder" % Core.game_dir)
+	Log.info("Loading OpenSC4...")
+	Log.info("Using %s as game data folder" % Core.game_dir)
 	# Would be nice to start multiple threads here not only one
 	label_node = $CurrentFileLabel
 	load_progress_node = $LoadProgress
 	next_scene_node = $NextScene
 	var err = loading_thread.start(Callable(self,'load_DATs'))
 	if err != OK:
-		Logger.error("Error starting thread: " % err)
+		Log.error("Error starting thread: " % err)
 		return
 
 func _exit_tree():
@@ -107,7 +107,7 @@ func load_DATs():
 	finish_loading()
 
 func finish_loading():
-	Logger.info("DBPF files loaded")
+	Log.info("DBPF files loaded")
 	next_scene_node.call_deferred("set_visible", true)
 
 func load_single_DAT(dat_file : String):
@@ -128,11 +128,10 @@ func _on_DATExplorerButton_pressed():
 	print("here")
 	var err = get_tree().change_scene_to_file("res://DATExplorer/DATExplorer.tscn")
 	if err != OK:
-		Logger.error("Error: %s" % err)
+		Log.error("Error: %s" % err)
 
 func _on_GameButton_pressed():
 	var err = get_tree().change_scene_to_file("res://Region.tscn")
 	if err != OK:
-		Logger.error("Error: %s" % err)
+		Log.error("Error: %s" % err)
 	
-

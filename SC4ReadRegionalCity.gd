@@ -42,4 +42,3 @@ func load(file, dbdf=null):
 		self.mode = "god"
 	elif v == 1:
 		self.mode = "normal"
-

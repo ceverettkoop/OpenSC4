@@ -33,7 +33,7 @@ func load(file, dbdf=null):
 		print("LTEXTSubfile: Too few characters (%d < %d)" % [expected_characters, n_characters])
 	var control = stream.get_u16()
 	if control != 0x0010:
-		Logger.debug("Wrong control code: 0x%04x (expects 0x0010)" % control)
+		Log.debug("Wrong control code: 0x%04x (expects 0x0010)" % control)
 		pass
 
 	for i in range(n_characters):

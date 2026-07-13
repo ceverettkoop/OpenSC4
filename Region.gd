@@ -40,7 +40,7 @@ var custom_ui_classes = {
 }
 
 func _init():
-	Logger.info("Initializing the region view")
+	Log.info("Initializing the region view")
 	
 	# Open the region INI file
 	#var _ini = INISubfile.new("res://Regions/%s/region.ini" % REGION_NAME)
@@ -53,13 +53,13 @@ func anchror_sort(a, b):
 		return a[2] > b[2]
 
 func _ready():
-	Logger.info("Region node is ready")	
+	Log.info("Region node is ready")	
 	var total_pop = 0
 	for city in self.get_children():
 		if city is RegionCityView:
 			city.display()
 			total_pop += city.get_total_pop()
-	Logger.info("Total population: %d" % [total_pop])
+	Log.info("Total population: %d" % [total_pop])
 	# Count the city files in the region folder
 	# City files end in .sc4
 	var files = []
@@ -68,7 +68,7 @@ func _ready():
 	dir = DirAccess.open(region_dir_full_path)
 	var err = DirAccess.get_open_error()
 	if err != OK:
-		Logger.error('Error opening region directory \'%s\': %s' % [region_dir_full_path, err])
+		Log.error('Error opening region directory \'%s\': %s' % [region_dir_full_path, err])
 		return
 	dir.list_dir_begin() # TODOGODOT4 fill missing arguments https://github.com/godotengine/godot/pull/40547
 	while true:
@@ -166,7 +166,7 @@ func _DEBUG_extract_files(type_id, group_id):
 			#var path = "user://UI/%s.png" % [item]
 			img.save_png(path)
 	else:
-		Logger.wanr("Type: %s is not yet implemented." % type_id)
+		Log.warn("Type: %s is not yet implemented." % type_id)
 
 func build_button(button, instance_id):
 	var btn_img = Core.get_subfile("PNG", "UI_IMAGE", instance_id)

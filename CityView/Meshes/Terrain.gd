@@ -92,7 +92,7 @@ func build_image_dict_and_texture_array(textures):
 			var fsh_subfile = Core.subfile(type_tex, group_tex, zoom_id, FSHSubfile)
 			# Check the length of data
 			if len(fsh_subfile.img.data["data"]) == 0:
-				Logger.error("Invalid SFH")
+				Log.error("Invalid SFH")
 			# Add the texture format to the list if is not yet there
 			var texture_format = fsh_subfile.img.get_format()
 			if not list_texture_format.has(texture_format):
@@ -137,7 +137,7 @@ func create_ind_to_layer(config, images_dict, texture_array):
 				bot_edge = layer
 		var test = texture_array.get_layer_data(layer)
 		if len(test.data["data"]) == 0:
-			Logger.error("failed to load layer %s with image %s" % [layer, key])
+			Log.error("failed to load layer %s with image %s" % [layer, key])
 		layer += 1
 	
 	self.mat.set_shader_parameter("cliff_ind", float(cliff_index))

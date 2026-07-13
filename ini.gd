@@ -10,7 +10,7 @@ func _init(path: String):
 	var err = FileAccess.get_open_error()
 	var current_section = ""
 	if err != OK:
-		Logger.error("Couldn't load file %s. Error: %s " % [file_path, err] )
+		Log.error("Couldn't load file %s. Error: %s " % [file_path, err] )
 		return
 	while ! file.eof_reached():
 		var line = file.get_line()

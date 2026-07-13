@@ -14,7 +14,7 @@ func _init(attributes):
 	if attributes.has('captionres'):
 		# Read hex reference
 		# The format is as follows: 0x{group_id,instance_id}
-		Logger.info("Captionres value: %s" % attributes['captionres'])
+		Log.info("Captionres value: %s" % attributes['captionres'])
 		var captionres = attributes['captionres'].trim_prefix('{').trim_suffix('}').split(',')
 		var group_id = ("0x%s"%captionres[0]).hex_to_int()
 		var instance_id = ("0x%s"%captionres[1]).hex_to_int()
