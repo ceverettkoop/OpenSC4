@@ -35,9 +35,9 @@ func display(): # TODO city edges override other cities causing glitches, can be
     var pos_on_grid = get_parent().map_to_local(Vector2(city_info.location[0], city_info.location[1]))
     #var thumbnail_texture : Texture2D = region_view_thumbnails[0]
     # The height of a tile if it were completely flat
-    #print(region_view_thumbnails[0].get_data().data["height"], region_view_thumbnails[0].get_data().data["width"], "\t", region_view_thumbnails[1].get_data().data["height"], region_view_thumbnails[1].get_data().data["width"])
-    var mystery_img = region_view_thumbnails[1].get_data()
-    var region_img = region_view_thumbnails[0].get_data()
+    #print(region_view_thumbnails[0].get_data().data["height"], region_view_thumbnails[0].get_image().data["width"], "\t", region_view_thumbnails[1].get_image().data["height"], region_view_thumbnails[1].get_image().data["width"])
+    var mystery_img = region_view_thumbnails[1].get_image()
+    var region_img = region_view_thumbnails[0].get_image()
     false # mystery_img.lock() # TODOConverter40, Image no longer requires locking, `false` helps to not break one line if/else, so it can freely be removed
     false # region_img.lock() # TODOConverter40, Image no longer requires locking, `false` helps to not break one line if/else, so it can freely be removed
     var min_h = mystery_img.data["height"]
@@ -72,7 +72,7 @@ func get_total_pop():
     return city_info.population_residential
 
 func save_thumbnail():
-    region_view_thumbnails[0].get_data().save_png("region_view_thumbnail.png")
+    region_view_thumbnails[0].get_image().save_png("region_view_thumbnail.png")
 
 func open_city():
     Boot.current_city = savefile

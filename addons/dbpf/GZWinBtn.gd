@@ -66,7 +66,7 @@ func set_texture(texture : Texture2D):
 func get_cropped_texture(texture : Texture2D, region : Rect2):
     var atlas_texture = AtlasTexture.new()
     atlas_texture.set_atlas(texture)
-    atlas_texture.set_region_enabled(region)
+    atlas_texture.region = region
     return atlas_texture
 
 func get_minimum_size():
