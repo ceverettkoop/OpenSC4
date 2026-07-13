@@ -14,7 +14,11 @@ const EXEMPLAR_TYPE : int = 0x6534284a
 # Offsets relative to the Exemplar-type marker within a record.
 const OFF_GROUP : int = -4       # exemplar group id (LE u32)
 const OFF_INSTANCE : int = 4     # exemplar instance id (LE u32)
-const OFF_BBOX : int = 0x10      # first of six big-endian float32s
+# The bbox is six big-endian float32s: minX, minY, minZ, maxX, maxY, maxZ.
+# In SC4's coordinate system Y is UP (altitude); X and Z are the ground plane.
+const OFF_MIN_X : int = 0x10
+const OFF_MIN_Y : int = 0x14     # altitude (metres)
+const OFF_MIN_Z : int = 0x18
 
 class BuildingRecord:
     var exemplar_tgi : Array      # [type, group, instance]
@@ -46,10 +50,10 @@ func load(file, dbdf=null):
                 _u32(marker + OFF_GROUP),
                 _u32(marker + OFF_INSTANCE),
             ]
-            be.seek(marker + OFF_BBOX)
+            be.seek(marker + OFF_MIN_X)
             rec.pos_x = be.get_float()
-            rec.pos_z = be.get_float()
-            rec.altitude = be.get_float()
+            rec.altitude = be.get_float()   # OFF_MIN_Y: Y is up
+            rec.pos_z = be.get_float()      # OFF_MIN_Z
             records.append(rec)
         pos += size
     return OK
