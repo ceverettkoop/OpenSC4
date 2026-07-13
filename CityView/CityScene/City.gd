@@ -421,13 +421,12 @@ func load_buildings():
     root.name = "Buildings"
     $Node3D.add_child(root)
     var base_mat : ShaderMaterial = $Node3D/TestS3D.get_material_override()
-    var noise_tex = $Node3D/WaterPlane/NoiseTexture.texture
 
     var model_cache = {}      # S3D TGI string -> {"mesh":, "material":} (or null)
     var placed = 0
     var no_model = 0
     for rec in bsub.records:
-        var model = _model_for_exemplar(rec.exemplar_tgi, model_cache, base_mat, noise_tex)
+        var model = _model_for_exemplar(rec.exemplar_tgi, model_cache, base_mat)
         if model == null:
             no_model += 1
             continue
@@ -442,7 +441,7 @@ func load_buildings():
     Log.info("Placed %d buildings (%d without a resolvable model)" % [placed, no_model])
 
 # Resolves a building exemplar to a cached model, loading + building it on first use.
-func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : ShaderMaterial, noise_tex):
+func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : ShaderMaterial):
     if not Core.subfile_indices.has(SubfileTGI.TGI2str(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2])):
         return null
     var exemplar = Core.subfile(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2], ExemplarSubfile)
@@ -462,7 +461,6 @@ func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : Sh
         return null
     var mat = base_mat.duplicate()
     mat.set_shader_parameter("s3dtexture", built["texture"])
-    mat.set_shader_parameter("nois_texture", noise_tex)
     var model = {"mesh": built["mesh"], "material": mat}
     cache[key] = model
     return model

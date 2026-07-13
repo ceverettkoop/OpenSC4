@@ -298,14 +298,11 @@ code = "shader_type spatial;
 render_mode depth_draw_always;
 
 uniform sampler2DArray s3dtexture : source_color;
-uniform sampler2D nois_texture: source_color;
-uniform vec2 direction = vec2(1.0, 0.0);
 
 void fragment(){
-	ivec2 iUV = (ivec2(UV * vec2(1280, 720) * vec2(341) + (direction * TIME))%ivec2(1024));
-	vec3 noise_col = pow(texelFetch(nois_texture, iUV, 0).rgb * vec3(2.0), vec3(2.0));//*vec3(0.4, 0.8, 0.4);
-	ALBEDO = min(texture(s3dtexture, vec3(UV, 0.0)).rgb * noise_col, vec3(1.0));
-	ALPHA = texture(s3dtexture, vec3(UV, 0.0)).a;
+	vec4 tex = texture(s3dtexture, vec3(UV, 0.0));
+	ALBEDO = tex.rgb;
+	ALPHA = tex.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.9;
 }
 	"
