@@ -77,7 +77,7 @@ func _ready():
         else:
             dir_complete = false
         if not dir_complete:
-            $dialog.window_title = "dir was incomplete, select the SC4 installation folder"
+            $dialog.title = "dir was incomplete, select the SC4 installation folder"
             $dialog.popup_centered(get_viewport_rect().size / 2)
             await $dialog.popup_hide
             print("todo: store path in cfg.ini")

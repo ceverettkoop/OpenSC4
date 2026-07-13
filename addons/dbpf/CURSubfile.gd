@@ -65,14 +65,14 @@ func load(file, dbdf=null):
             0x00, 0x00, 0x00, 0x00, 
             0x36, 0x00, 0x00, 0x00]
             var bmp_data = PackedByteArray(bmp_header)
-            bmp_data.append_array(raw_data.slice(ind-40, ind-1))
-            bmp_data.append_array(raw_data.slice(ind, ind+bmp_size-1))
+            bmp_data.append_array(raw_data.slice(ind-40, ind))
+            bmp_data.append_array(raw_data.slice(ind, ind+bmp_size))
             #bmp_data[22] = bmp_data[18]
             var temp_img = Image.new()
             temp_img.load_bmp_from_buffer(bmp_data)
             temp_img.decompress()
             temp_img = temp_img.get_region(Rect2i(Vector2i(0, 0), Vector2i(bmp_width, bmp_width)))
-            var mask_data = raw_data.slice(ind+bmp_size, raw_data.size()-1)
+            var mask_data = raw_data.slice(ind+bmp_size, raw_data.size())
             for i in range(bmp_width):
                 for j in range(0, bmp_width, 8):
                     var k = (j / 8) + (i * 4)

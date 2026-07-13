@@ -179,11 +179,21 @@ func add_to_mesh(mesh: MeshInstance3D, location: Vector3):
         UVs.append_array(loc_UV)
         var image = get_texture_from_mat_id(group.mat_id)
         images.append(image)
+    var fmt = self.formats[0]
+    var prepared : Array[Image] = []
+    for img in images:
+        var im = img
+        if im.get_format() != fmt:
+            im = im.duplicate()
+            im.convert(fmt)
+        if im.get_width() != self.max_text_width or im.get_height() != self.max_text_height:
+            if im == img:
+                im = img.duplicate()
+            im.resize(self.max_text_width, self.max_text_height)
+        prepared.append(im)
     var textarr = Texture2DArray.new()
-    textarr.create (self.max_text_width, self.max_text_height, len(self.groups), self.formats[0], 2)
-    for imgind in range(len(images)):
-        textarr.set_layer_data(images[imgind], imgind)
-        
+    textarr.create_from_images(prepared)
+
     var array_mesh : ArrayMesh = mesh.mesh
     var arrays : Array = []
     arrays.resize(ArrayMesh.ARRAY_MAX)
