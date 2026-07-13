@@ -171,11 +171,12 @@ func mouse_ray():
     var camera = get_tree().root.get_camera_3d()
     var from = camera.project_ray_origin(mouse_pos)
     var to = from + camera.project_ray_normal(mouse_pos) * ray_length
-    var ray_dict = space.intersect_ray(from, to)
+    var query = PhysicsRayQueryParameters3D.create(from, to)
+    var ray_dict = space.intersect_ray(query)
     var ret_pos = Vector2()
     if ray_dict.keys().has("position"):
         var pos = ray_dict["position"]
-        pos = self.get_parent().transform.affine_inverse().xform (pos)
+        pos = self.get_parent().transform.affine_inverse() * pos
         ret_pos = Vector2(floor(pos.x), floor(pos.z))
     return ret_pos
     
