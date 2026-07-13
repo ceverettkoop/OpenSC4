@@ -4,20 +4,20 @@ class_name RULSubfile
 
 """
 Individual Network RULs:
-	use edge-shape definitions to define what object to render there, 
-	it doesn't specify wether it is an FSH or an S3D or an Exemplar
+    use edge-shape definitions to define what object to render there, 
+    it doesn't specify wether it is an FSH or an S3D or an Exemplar
 
 my approach will be to store the RUL information in nested dicts
-	dict[W = dict[N = dict[E = dict[S = IID]]]]
+    dict[W = dict[N = dict[E = dict[S = IID]]]]
 This data is then used to add the FSH's to texturearray(s)
-	for S3D objects I'd need to initialize them and get their FSH's
-	when adding FSH's to the array I ofcourse need to keep track of what layer is what FSH
-	that record should also allow me to not load duplicate FSH's since they are reused
+    for S3D objects I'd need to initialize them and get their FSH's
+    when adding FSH's to the array I ofcourse need to keep track of what layer is what FSH
+    that record should also allow me to not load duplicate FSH's since they are reused
 This data is then used to define a dict of the same shape with TransitTile objects 
-	that store path and texarrlayer data
-	
+    that store path and texarrlayer data
+    
 Edge definitions come in the following forms:
-	per side w, n, e, s:
+    per side w, n, e, s:
  - 00 = disconnected
  - 01 = diagonal 45deg left (as viewed from edge to center)
  - 02 = straight
@@ -40,7 +40,7 @@ rails also use:
 
 My observation:
 Network Instances starting hex wnes_keys
-							example id of straight piece
+                            example id of straight piece
 0d - monorail				0x0d031500 - FSH & S3D	-dat2 & dat1
 0c - bridges
 0b - bridges
@@ -86,81 +86,81 @@ var RUL_wnes = {}
 var num_ids = 0
 
 func _init(index):
-	super._init(index)
+    super._init(index)
 
 func load(file, dbdf=null):
-	"""
-	stores RUL lines with 1-lines functioning as dict-keys
-	2 and 3 lines are stored as arrays in an 'entry-array' 
-	this is because there can be multiple entries with the same -tile edge-vals
-	in order to handle that I will need to use the whole neighbor-grid as described below
-	and evaluate the options and from the ones that fit use the one with the larges number of tiles that fit
-	I'm hoping draw-cases would describe the same tile anyway
-	
-		neighbor location numbers (0 is base location described by 1-line):
-			11	12	13	14	15
-			10	2	3	4	16
-			9	1	0	5	17
-			24	8	7	6	18
-			23	22	21	20	19
-	"""
-	super.load(file, dbdf)
-	file.seek(index.location)
-	var ind = 0
-	assert(len(raw_data) > 0) #,"DBPFSubfile.load: no data")
-	var ini_str = raw_data.get_string_from_ascii()
-	var i = 0
-	var raw_split = ini_str.split('\n')
-	var ids_found = []
-	while i < len(raw_split)-1:
-		var line = raw_split[i].strip_edges(true, true)
-		if len(line) > 1 and line[0] == '1':
-			var split = line.split(",")
-			var wnes_keys = []
-			wnes_keys.append(int(split[1]))
-			wnes_keys.append(int(split[2]))
-			wnes_keys.append(int(split[3]))
-			wnes_keys.append(int(split[4]))
-			if not self.RUL_wnes.has(wnes_keys):
-				self.RUL_wnes[wnes_keys] = []
-			i+=1
-			line = raw_split[i].strip_edges(true, true)
-			var entry = []
-			while line[0] != '1' and i < len(raw_split)-1:
-				if line[0] == '2':
-					var wnes2_keys = line.split(",")
-					entry.append([
-						int(wnes2_keys[0]), 
-						int(wnes2_keys[1]),
-						int(wnes2_keys[2]),
-						int(wnes2_keys[3]),
-						int(wnes2_keys[4]),
-						int(wnes2_keys[5])
-						])
-				elif line[0] == '3':
-					var wnes3_keys = line.split(",")
-					var string = wnes3_keys[2].split("x")[1]
-					# needed to split hex strings because godots hex_to_int is bugged for large numbers
-					var hexstr_to_int = 0
-					if len(string) > 4:
-						hexstr_to_int = ("0x00" + string.substr(0, len(string)-4)).hex_to_int()<<16
-					hexstr_to_int += ("0x00" + string.substr(max(len(string)-4, 0), len(string))).hex_to_int()
-					entry.append([
-						int(wnes3_keys[0]), 
-						int(wnes3_keys[1]),
-						hexstr_to_int,
-						int(wnes3_keys[3]),
-						int(wnes3_keys[4])
-						])
-					if not ids_found.has(hexstr_to_int):
-						ids_found.append(hexstr_to_int)
-						num_ids += 1
-				i+=1
-				while len(raw_split[i]) < 9 and i < len(raw_split)-1:
-					i+=1
-				if len(raw_split[i]) > 8:
-					line = raw_split[i].strip_edges(true, true)
-			self.RUL_wnes[wnes_keys].append(entry)
-		else:
-			i+=1
-	return OK
+    """
+    stores RUL lines with 1-lines functioning as dict-keys
+    2 and 3 lines are stored as arrays in an 'entry-array' 
+    this is because there can be multiple entries with the same -tile edge-vals
+    in order to handle that I will need to use the whole neighbor-grid as described below
+    and evaluate the options and from the ones that fit use the one with the larges number of tiles that fit
+    I'm hoping draw-cases would describe the same tile anyway
+    
+        neighbor location numbers (0 is base location described by 1-line):
+            11	12	13	14	15
+            10	2	3	4	16
+            9	1	0	5	17
+            24	8	7	6	18
+            23	22	21	20	19
+    """
+    super.load(file, dbdf)
+    file.seek(index.location)
+    var ind = 0
+    assert(len(raw_data) > 0) #,"DBPFSubfile.load: no data")
+    var ini_str = raw_data.get_string_from_ascii()
+    var i = 0
+    var raw_split = ini_str.split('\n')
+    var ids_found = []
+    while i < len(raw_split)-1:
+        var line = raw_split[i].strip_edges(true, true)
+        if len(line) > 1 and line[0] == '1':
+            var split = line.split(",")
+            var wnes_keys = []
+            wnes_keys.append(int(split[1]))
+            wnes_keys.append(int(split[2]))
+            wnes_keys.append(int(split[3]))
+            wnes_keys.append(int(split[4]))
+            if not self.RUL_wnes.has(wnes_keys):
+                self.RUL_wnes[wnes_keys] = []
+            i+=1
+            line = raw_split[i].strip_edges(true, true)
+            var entry = []
+            while line[0] != '1' and i < len(raw_split)-1:
+                if line[0] == '2':
+                    var wnes2_keys = line.split(",")
+                    entry.append([
+                        int(wnes2_keys[0]), 
+                        int(wnes2_keys[1]),
+                        int(wnes2_keys[2]),
+                        int(wnes2_keys[3]),
+                        int(wnes2_keys[4]),
+                        int(wnes2_keys[5])
+                        ])
+                elif line[0] == '3':
+                    var wnes3_keys = line.split(",")
+                    var string = wnes3_keys[2].split("x")[1]
+                    # needed to split hex strings because godots hex_to_int is bugged for large numbers
+                    var hexstr_to_int = 0
+                    if len(string) > 4:
+                        hexstr_to_int = ("0x00" + string.substr(0, len(string)-4)).hex_to_int()<<16
+                    hexstr_to_int += ("0x00" + string.substr(max(len(string)-4, 0), len(string))).hex_to_int()
+                    entry.append([
+                        int(wnes3_keys[0]), 
+                        int(wnes3_keys[1]),
+                        hexstr_to_int,
+                        int(wnes3_keys[3]),
+                        int(wnes3_keys[4])
+                        ])
+                    if not ids_found.has(hexstr_to_int):
+                        ids_found.append(hexstr_to_int)
+                        num_ids += 1
+                i+=1
+                while len(raw_split[i]) < 9 and i < len(raw_split)-1:
+                    i+=1
+                if len(raw_split[i]) > 8:
+                    line = raw_split[i].strip_edges(true, true)
+            self.RUL_wnes[wnes_keys].append(entry)
+        else:
+            i+=1
+    return OK

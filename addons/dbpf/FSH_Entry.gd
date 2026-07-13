@@ -17,5 +17,5 @@ var mipmaps
 var img
 
 func _init(tag,offset):
-	self.dir_tag = tag
-	self.offset = offset
+    self.dir_tag = tag
+    self.offset = offset

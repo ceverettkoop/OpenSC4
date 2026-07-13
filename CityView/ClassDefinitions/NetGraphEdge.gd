@@ -8,5 +8,5 @@ var start_node : NetGraphNode
 var end_node : NetGraphNode
 
 func _init():
-	pass
+    pass
 

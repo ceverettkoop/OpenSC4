@@ -1,5 +1,5 @@
 extends GZWinBtn
 
 func _init(attributes):
-	super._init(attributes)
-	self.name = "ShowBordersCheckbox"
+    super._init(attributes)
+    self.name = "ShowBordersCheckbox"

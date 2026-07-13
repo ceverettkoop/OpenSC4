@@ -97,9 +97,10 @@ Single loader `Thread` in `BootScreen` plus `call_deferred` marshaling. **No `Mu
 
 ## Conventions & gotchas
 
-- **Indentation is TABS everywhere.** Set the Godot editor's
-  `text_editor/behavior/indent/type` to **tabs**. If it's set to spaces, the editor/import
-  rewrites `.gd` files and produces giant whitespace diffs.
+- **Indentation is 4 SPACES everywhere.** Keep the Godot editor's
+  `text_editor/behavior/indent/type` set to **spaces** (size 4). If the editor setting and
+  the files ever disagree, the editor/import rewrites `.gd` files and produces giant
+  whitespace diffs — the setting and the codebase must always match.
 - **Do NOT rename the `Log` autoload to `Logger`.** Godot 4.5+ ships a native `Logger` class
   that would shadow the autoload and break every `Log.*` call site.
 - In Godot 4, `FileAccess.open()`, `ImageTexture.create_from_image()`, and

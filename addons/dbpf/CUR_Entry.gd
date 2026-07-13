@@ -12,4 +12,4 @@ var offset
 var img
 
 func _init():
-	pass
+    pass

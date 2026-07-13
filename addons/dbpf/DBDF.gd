@@ -7,6 +7,6 @@ class_name DBDF #Database Directory Files
 var entries = []
 
 func load(file, location, size):
-	file.seek(location)
-	for _i in range(size / 16):
-		entries.append(DBDFEntry.new(file))
+    file.seek(location)
+    for _i in range(size / 16):
+        entries.append(DBDFEntry.new(file))

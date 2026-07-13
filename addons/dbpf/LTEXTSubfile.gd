@@ -21,23 +21,23 @@ class_name LTEXTSubfile
 var text : String
 
 func _init(index):
-	super._init(index)
+    super._init(index)
 
 func load(file, dbdf=null):
-	super.load(file, dbdf)
-	text = ""
-	var n_characters = stream.get_u16() # (2-byte unicode characters)
-	# Check that we have the correct amount of characters
-	var expected_characters = (stream.get_available_bytes() - 2) / 2
-	if expected_characters < n_characters:
-		print("LTEXTSubfile: Too few characters (%d < %d)" % [expected_characters, n_characters])
-	var control = stream.get_u16()
-	if control != 0x0010:
-		Log.debug("Wrong control code: 0x%04x (expects 0x0010)" % control)
-		pass
+    super.load(file, dbdf)
+    text = ""
+    var n_characters = stream.get_u16() # (2-byte unicode characters)
+    # Check that we have the correct amount of characters
+    var expected_characters = (stream.get_available_bytes() - 2) / 2
+    if expected_characters < n_characters:
+        print("LTEXTSubfile: Too few characters (%d < %d)" % [expected_characters, n_characters])
+    var control = stream.get_u16()
+    if control != 0x0010:
+        Log.debug("Wrong control code: 0x%04x (expects 0x0010)" % control)
+        pass
 
-	for i in range(n_characters):
-		if stream.get_available_bytes() < 2:
-			print("LTEXTSubfile: Unexpected end of stream")
-			break
-		text += char(stream.get_u16())
+    for i in range(n_characters):
+        if stream.get_available_bytes() < 2:
+            print("LTEXTSubfile: Unexpected end of stream")
+            break
+        text += char(stream.get_u16())

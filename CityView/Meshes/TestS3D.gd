@@ -11,15 +11,15 @@ var tm_table
 # Called when the node enters the scene tree for the first time.
 func _ready():
 
-	#mat.albedo_color = color
-	st.begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
-	for v in vertices.size(): 
-		#st.add_color(color)
-		st.add_uv(UVs[v])
-		st.add_vertex(vertices[v])
+    #mat.albedo_color = color
+    st.begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+    for v in vertices.size(): 
+        #st.add_color(color)
+        st.add_uv(UVs[v])
+        st.add_vertex(vertices[v])
 
-	st.commit(tmpMesh)
-	self.set_mesh(tmpMesh)
+    st.commit(tmpMesh)
+    self.set_mesh(tmpMesh)
 
 
 # Called every frame. 'delta' is the elapsed time since the previous frame.

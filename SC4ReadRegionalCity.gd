@@ -15,30 +15,30 @@ var guid : int = 0
 var mode : String = "god"
 
 func _init(index):
-	super._init(index)
+    super._init(index)
 
 func load(file, dbdf=null):
-	super.load(file, dbdf)
-	var stream = StreamPeerBuffer.new()
-	stream.data_array = raw_data
-	self.version = [stream.get_16(), stream.get_16()];
-	self.location = [stream.get_32(), stream.get_32()];
-	self.size = [stream.get_32(), stream.get_32()];
-	self.population_residential = stream.get_32();
-	self.population_commercial = stream.get_32();
-	self.population_industrial = stream.get_32();
-	stream.get_float();
-	self.mayor_rating = stream.get_8()
-	self.star_count = stream.get_8()
-	self.tutorial_flag = stream.get_8() == 1
-	self.guid = stream.get_32()
-	self.unknown[5] = stream.get_32()
-	self.unknown[6] = stream.get_32()
-	self.unknown[7] = stream.get_32()
-	self.unknown[8] = stream.get_32()
-	self.unknown[9] = stream.get_32()
-	var v = stream.get_8()
-	if v == 0:
-		self.mode = "god"
-	elif v == 1:
-		self.mode = "normal"
+    super.load(file, dbdf)
+    var stream = StreamPeerBuffer.new()
+    stream.data_array = raw_data
+    self.version = [stream.get_16(), stream.get_16()];
+    self.location = [stream.get_32(), stream.get_32()];
+    self.size = [stream.get_32(), stream.get_32()];
+    self.population_residential = stream.get_32();
+    self.population_commercial = stream.get_32();
+    self.population_industrial = stream.get_32();
+    stream.get_float();
+    self.mayor_rating = stream.get_8()
+    self.star_count = stream.get_8()
+    self.tutorial_flag = stream.get_8() == 1
+    self.guid = stream.get_32()
+    self.unknown[5] = stream.get_32()
+    self.unknown[6] = stream.get_32()
+    self.unknown[7] = stream.get_32()
+    self.unknown[8] = stream.get_32()
+    self.unknown[9] = stream.get_32()
+    var v = stream.get_8()
+    if v == 0:
+        self.mode = "god"
+    elif v == 1:
+        self.mode = "normal"

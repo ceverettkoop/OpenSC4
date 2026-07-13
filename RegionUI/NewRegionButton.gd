@@ -1,5 +1,5 @@
 extends GZWinBtn
 
 func _init(attributes):
-	super._init(attributes)
-	self.name = "NewRegionButton"
+    super._init(attributes)
+    self.name = "NewRegionButton"

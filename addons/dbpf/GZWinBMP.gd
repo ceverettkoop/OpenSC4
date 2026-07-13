@@ -20,18 +20,18 @@ class_name GZWinBMP
 var texture : Texture2D = null
 
 func _init(attributes):
-	if not 'image' in attributes:
-		print(attributes)
-	else:
-		if attributes['image'] == null:
-			set_texture(load("res://missing_subfile.png"))
-		else:
-			set_texture(attributes['image'].get_as_texture())
+    if not 'image' in attributes:
+        print(attributes)
+    else:
+        if attributes['image'] == null:
+            set_texture(load("res://missing_subfile.png"))
+        else:
+            set_texture(attributes['image'].get_as_texture())
 
 func set_texture(texture : Texture2D):
-	self.texture = texture
-	queue_redraw()
+    self.texture = texture
+    queue_redraw()
 
 func _draw():
-	if self.texture != null:
-		draw_texture(texture, get_position())
+    if self.texture != null:
+        draw_texture(texture, get_position())

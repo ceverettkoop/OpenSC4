@@ -6,11 +6,11 @@ var file_path
 var cfgFile : ConfigFile
 
 func _init(index):
-	super._init(index)
+    super._init(index)
 
 func load(file, dbdf=null):
-	super.load(file, dbdf)
-	file.seek(index.location)
+    super.load(file, dbdf)
+    file.seek(index.location)
 
 #	var current_section = ""
 #	if err != OK:
@@ -30,18 +30,18 @@ func load(file, dbdf=null):
 #			var key = line.split('=')[0]
 #			var value = line.split('=')[1]
 #			sections[current_section][key] = value
-	
-	#DebugUtils.print_dict(sections, self)
-	
+    
+    #DebugUtils.print_dict(sections, self)
+    
 
 func get_as_cfg():
-	var sections = {}
-	var err = cfgFile.load(raw_data.get_string_from_ascii())
-	if err != OK:
-		Log.error("Couldnt load as INI!")
-		return {}
-	else:
-		pass
+    var sections = {}
+    var err = cfgFile.load(raw_data.get_string_from_ascii())
+    if err != OK:
+        Log.error("Couldnt load as INI!")
+        return {}
+    else:
+        pass
 
 func save_file(name):
-	cfgFile.save(name)
+    cfgFile.save(name)
