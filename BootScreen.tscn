@@ -1,9 +1,9 @@
-[gd_scene load_steps=3 format=3 uid="uid://d0ediey6qa77f"]
+[gd_scene format=3 uid="uid://d0ediey6qa77f"]
 
-[ext_resource type="Script" path="res://BootScreen.gd" id="1"]
+[ext_resource type="Script" uid="uid://bmfsjxbo5mwqc" path="res://BootScreen.gd" id="1"]
 [ext_resource type="Texture2D" uid="uid://swmrfycjhv5j" path="res://splash.png" id="2"]
 
-[node name="BootScreen" type="Control"]
+[node name="BootScreen" type="Control" unique_id=1731559740]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -12,13 +12,13 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("1")
 
-[node name="dialog" type="FileDialog" parent="."]
+[node name="dialog" type="FileDialog" parent="." unique_id=888172186]
 mode = 2
 mode_overrides_title = false
 access = 2
 show_hidden_files = true
 
-[node name="LoadProgress" type="ProgressBar" parent="."]
+[node name="LoadProgress" type="ProgressBar" parent="." unique_id=66906118]
 layout_mode = 0
 anchor_left = 0.25
 anchor_top = 0.514
@@ -29,7 +29,7 @@ offset_top = 219.92
 offset_right = -10.0
 offset_bottom = 219.92
 
-[node name="Label" type="Label" parent="."]
+[node name="Label" type="Label" parent="." unique_id=206797997]
 layout_mode = 0
 offset_left = 310.0
 offset_top = 568.0
@@ -37,20 +37,20 @@ offset_right = 433.0
 offset_bottom = 582.0
 text = "Loading OpenSC4..."
 
-[node name="CurrentFileLabel" type="Label" parent="."]
+[node name="CurrentFileLabel" type="Label" parent="." unique_id=427111352]
 layout_mode = 0
 offset_left = 310.0
 offset_top = 631.0
 offset_right = 350.0
 offset_bottom = 645.0
 
-[node name="background" type="Sprite2D" parent="."]
+[node name="background" type="Sprite2D" parent="." unique_id=1054784431]
 z_index = -1
 position = Vector2(636, 366)
 scale = Vector2(0.6625, 0.675)
 texture = ExtResource("2")
 
-[node name="NextScene" type="Panel" parent="."]
+[node name="NextScene" type="Panel" parent="." unique_id=1007623945]
 visible = false
 layout_mode = 0
 anchor_left = 0.5
@@ -62,7 +62,7 @@ offset_top = -139.0
 offset_right = 381.0
 offset_bottom = 139.0
 
-[node name="VBoxContainer" type="VBoxContainer" parent="NextScene"]
+[node name="VBoxContainer" type="VBoxContainer" parent="NextScene" unique_id=1727440413]
 layout_mode = 0
 anchor_left = 0.5
 anchor_top = 0.5
@@ -73,18 +73,18 @@ offset_top = -19.0
 offset_right = -122.0
 offset_bottom = -19.0
 
-[node name="Label" type="Label" parent="NextScene/VBoxContainer"]
+[node name="Label" type="Label" parent="NextScene/VBoxContainer" unique_id=180446877]
 layout_mode = 2
 text = "Game files loaded"
 
-[node name="HBoxContainer" type="HBoxContainer" parent="NextScene/VBoxContainer"]
+[node name="HBoxContainer" type="HBoxContainer" parent="NextScene/VBoxContainer" unique_id=1633761607]
 layout_mode = 2
 
-[node name="GameButton" type="Button" parent="NextScene/VBoxContainer/HBoxContainer"]
+[node name="GameButton" type="Button" parent="NextScene/VBoxContainer/HBoxContainer" unique_id=825031375]
 layout_mode = 2
 text = "Launch game"
 
-[node name="DATExplorerButton" type="Button" parent="NextScene/VBoxContainer/HBoxContainer"]
+[node name="DATExplorerButton" type="Button" parent="NextScene/VBoxContainer/HBoxContainer" unique_id=805421901]
 layout_mode = 2
 text = "Launch DAT explorer"
 

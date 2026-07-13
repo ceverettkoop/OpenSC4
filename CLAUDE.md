@@ -109,8 +109,9 @@ Single loader `Thread` in `BootScreen` plus `call_deferred` marshaling. **No `Mu
 
 ## Known issues / TODO
 
-- `City.tscn` embedded shaders still contain **Godot 3 GLSL** (removed `DEPTH_TEXTURE`, `PI`
-  redefinition) — needs a shader port before the city view renders correctly.
+- `City.tscn` embedded shaders were ported to Godot 4 (explicit `hint_depth_texture` uniform,
+  Vulkan 0..1 depth NDC, built-in `PI`) but the water shore-fade has only been verified to
+  compile, not eyeballed in the editor.
 - `utils/debug_ui/loading_icon_spinning.tres` references `load0.png`..`load7.png` that were
   never committed — orphaned resource.
 - `BootScreen.load_single_DAT` progress-bar update is marked with a

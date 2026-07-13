@@ -30,6 +30,7 @@ code = "shader_type spatial;
 render_mode depth_draw_always;
 
 uniform sampler2D watermap;
+uniform sampler2D depth_texture : hint_depth_texture, filter_linear_mipmap;
 // 512 to be used as 16 pixels per tile(1 per m) with octaves using 25 and 39.0625
 // first octave means the texture encompasses 32 tiles before repeating, 10.24, 6.55 tiles for octaves
 // to reduce noticable repeatedness octaves should not repeat at the same interger number of tiles
@@ -93,8 +94,8 @@ void vertex(){
 
 void fragment(){
 
-	float depth = texture(DEPTH_TEXTURE, SCREEN_UV).r;
-	vec3 ndc = vec3(SCREEN_UV, depth) * 2.0 - 1.0;
+	float depth = texture(depth_texture, SCREEN_UV).r;
+	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
 	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
 	view.xyz /= view.w;
 
@@ -194,7 +195,6 @@ uniform sampler2D layer;
 uniform sampler2D watermap;
 varying smooth vec3 coord_pass;
 varying smooth float map_str;
-const float PI = 3.14159265358979323846;
 uniform float cliff_ind;
 uniform float beach_ind;
 uniform float tiling_factor;
@@ -255,7 +255,7 @@ void fragment()
 		if (rem1.x < (0.05 * max((5.0-float(zoom_ind)), 0.0)) ){
 			grid = vec3(0.6, 0.6, 0.6);
 		}
-		if (rem1.y < (0.05 * max((5.0-float(zoom_ind)), 0.0)) and grid_bool == true){
+		if (rem1.y < (0.05 * max((5.0-float(zoom_ind)), 0.0)) && grid_bool == true){
 			grid = vec3(0.6, 0.6, 0.6);
 		}
 	}
@@ -322,7 +322,6 @@ uniform sampler2DArray terrain : source_color;
 uniform int zoom;
 varying smooth float height_var;
 varying flat float height_flat;
-const float PI = 3.14159265358979323846;
 uniform float tiling_factor;
 uniform float top_ind;
 uniform float mid_ind;
