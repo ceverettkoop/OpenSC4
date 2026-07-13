@@ -1,4 +1,4 @@
-extends TileMap
+extends TileMapLayer
 
 
 var cities : Array = []

@@ -106,17 +106,17 @@ func _gui_input(event):
 			if self.style == ButtonStyle.RADIOCHECK:
 				is_checked = not is_checked
 				if is_checked:
-					emit_signal('checked')
+					checked.emit()
 				else:
-					emit_signal('unchecked')
+					unchecked.emit()
 			elif self.style == ButtonStyle.TOGGLE:
 				is_toggled = not is_toggled
 				if is_toggled:
-					emit_signal('toggled_on')
+					toggled_on.emit()
 				else:
-					emit_signal('toggled_off')
+					toggled_off.emit()
 			else:
-				emit_signal('clicked')
+				clicked.emit()
 		else:
 			is_pressed = false
 		update_state()

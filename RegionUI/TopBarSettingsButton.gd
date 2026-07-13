@@ -3,8 +3,8 @@ extends GZWinBtn
 func _init(attributes : Dictionary):
 	super._init(attributes)
 	self.name="TopBarSettingsButton"
-	self.connect("toggled_on",Callable(self,"_on_toggled_on"))
-	self.connect("toggled_off",Callable(self,"_on_toggled_off"))
+	self.toggled_on.connect(_on_toggled_on)
+	self.toggled_off.connect(_on_toggled_off)
 
 func _on_toggled_on():
 	$"../../TopBarSettingsMenu".set_visible(true)

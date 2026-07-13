@@ -10,7 +10,7 @@ func _init():
 	self.load_music_files()
 
 func _ready():
-	self.connect("finished",Callable(self,"play_music"))
+	self.finished.connect(play_music)
 
 func play_music():
 	if len(self.music_list) != 0:
