@@ -118,7 +118,7 @@ func load_single_DAT(dat_file : String):
 	Core.add_dbpf(dbpf)
 	Boot.load_progress_val += 100.0 / len(dat_files)
 	#this doesn't seem to actually occur
-	load_progress_node.call_deferred("set_value", Boot.load_progress)
+	load_progress_node.call_deferred("set_value", Boot.load_progress_val)
 
 
 func _on_dialog_confirmed():

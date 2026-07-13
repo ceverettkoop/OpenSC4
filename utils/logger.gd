@@ -57,10 +57,10 @@ class Logfile:
 	# TODO: Godot doesn't support docstrings for inner classes, GoDoIt (GH-1320)
 	# """Class for log files that can be shared between various modules."""
 	const FILE_BUFFER_SIZE = 30
-	var file: FileAccess = null
 	var path = ""
 
 	func _init(_path,_queue_mode = QUEUE_MODES.NONE):
+		super(_path, _queue_mode)  # Godot 4: parent _init is not implicit; sets name + queue_mode
 		if validate_path(_path):
 			path = _path
 		buffer.resize(FILE_BUFFER_SIZE)
@@ -77,14 +77,13 @@ class Logfile:
 	func validate_path(path):
 		"""Validate the path given as argument, making it possible to write to
 		the designated file or folder. Returns whether the path is valid."""
-		if not (path.is_absolute_path() or path.is_rel_path()):
+		if not (path.is_absolute_path() or path.is_relative_path()):
 			print("[ERROR] [logger] The given path '%s' is not valid." % path)
 			return false
 		var base_dir = path.get_base_dir()
-		var dir = DirAccess.open(base_dir)
-		if not dir.dir_exists(base_dir):
+		if not DirAccess.dir_exists_absolute(base_dir):
 			# TODO: Move directory creation to the function that will actually *write*
-			var err = dir.make_dir_recursive(base_dir)
+			var err = DirAccess.make_dir_recursive_absolute(base_dir)
 			if err:
 				print("[ERROR] [logger] Could not create the '%s' directory; exited with error %d." % [base_dir, err])
 				return false
@@ -96,14 +95,15 @@ class Logfile:
 		"""Flush the buffer, i.e. write its contents to the target file."""
 		if buffer_idx == 0:
 			return  # Nothing to write
-		var err = file.open(path, get_write_mode())
-		if err:
+		var f = FileAccess.open(path, get_write_mode())
+		if f == null:
+			var err = FileAccess.get_open_error()
 			print("[ERROR] [logger] Could not open the '%s' log file; exited with error %d." % [path, err])
 			return
-		file.seek_end()
+		f.seek_end()
 		for i in range(buffer_idx):
-			file.store_line(buffer[i])
-		file.close()
+			f.store_line(buffer[i])
+		f = null  # Close the file by releasing the reference
 		buffer_idx = 0  # We don't clear the memory, we'll just overwrite it
 
 	func write(output, level):
@@ -118,13 +118,14 @@ class Logfile:
 				queue_action = QUEUE_MODES.ALL
 
 		if queue_action == QUEUE_MODES.NONE:
-			var err = file.open(path, get_write_mode())
-			if err:
+			var f = FileAccess.open(path, get_write_mode())
+			if f == null:
+				var err = FileAccess.get_open_error()
 				print("[ERROR] [logger] Could not open the '%s' log file; exited with error %d." % [path, err])
 				return
-			file.seek_end()
-			file.store_line(output)
-			file.close()
+			f.seek_end()
+			f.store_line(output)
+			f = null  # Close the file by releasing the reference
 
 		if queue_action == QUEUE_MODES.ALL:
 			buffer[buffer_idx] = output
@@ -730,8 +731,7 @@ func load_config(configfile = default_configfile_path):
 	produced by the ConfigFile API.
 	Returns an error code (OK or some ERR_*)."""
 	# Look for the file
-	var dir = DirAccess.open("configfile")
-	if not dir.file_exists(configfile):
+	if not FileAccess.file_exists(configfile):
 		warn("Could not load the config in '%s', the file does not exist." % configfile, PLUGIN_NAME)
 		return ERR_FILE_NOT_FOUND
 
