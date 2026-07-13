@@ -11,7 +11,7 @@ var config
 
 var loading_thread : Thread
 var dat_files : Array = [
-						 "SimCity 4.ini",
+						 "Apps/SimCity 4.ini",
 						 "Sound.dat",
 						 "Intro.dat",
 						 "SimCity_1.dat",

@@ -28,6 +28,7 @@ var indices_by_type_and_group : Dictionary
 var all_types : Dictionary
 var file : FileAccess
 var path : String
+var loaded : bool = false
 var print_load_times : bool = false
 
 @export var ui_region_textures: Dictionary = {}
@@ -37,15 +38,14 @@ func _init(filepath : String):
 	var total_time_start = Time.get_unix_time_from_system()
 	# Open the file
 	self.file = FileAccess.open(filepath, FileAccess.READ)
-	var err = file.get_error()
-	if err != OK:
-		push_error(err)
+	if self.file == null:
+		Log.error("Could not open DBPF file '%s' (error %d)" % [filepath, FileAccess.get_open_error()])
 		return
 	# Read the file
 	# Check that the first four bytes are DBPF
 	var dbpf = self.file.get_buffer(4).get_string_from_ascii();
 	if (dbpf != "DBPF"):
-		push_error(ERR_INVALID_DATA)
+		Log.warn("File '%s' is not a valid DBPF file, skipping" % filepath)
 		return
 	# Get the version
 	var _version_major = self.file.get_32()
@@ -96,6 +96,7 @@ func _init(filepath : String):
 	var total_time_now = Time.get_unix_time_from_system()
 	if self.print_load_times:
 		print("Took ", total_time_now - total_time_start, "ms to load ", filepath)
+	self.loaded = true
 
 func dbg_subfile_types():
 	for index in indices.values():

@@ -265,6 +265,8 @@ func subfile(type_id : int, group_id : int, instance_id : int, subfile_class) ->
 		return index.dbpf.get_subfile(type_id, group_id, instance_id, subfile_class)
 
 func add_dbpf(dbpf : DBPF):
+	if dbpf == null or not dbpf.loaded:
+		return
 	if not dbpf_files.has(dbpf.path):
 		dbpf_files[dbpf.path] = dbpf
 	for ind_key in dbpf.indices.keys():
