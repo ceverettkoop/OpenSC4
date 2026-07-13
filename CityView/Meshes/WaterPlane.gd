@@ -100,10 +100,17 @@ func generate_wateredges(HeightMap):
     var water_text = Texture2DArray.new()
     var w_w = water_imgs[4].width
     var w_h = water_imgs[4].height
-    var format = water_imgs[4].img.get_format()
-    water_text.create (w_h, w_w, 5, format, 2)
-    for i in range(len(water_imgs)):
-        water_text.set_layer_data(water_imgs[i].img, i)
+    # Normalise each zoom image to RGBA8 at a common size, then pack (Godot 4 API).
+    var w_images : Array[Image] = []
+    for wi in water_imgs:
+        var im : Image = wi.img.duplicate()
+        if im.is_compressed():
+            im.decompress()
+        im.convert(Image.FORMAT_RGBA8)
+        if im.get_width() != w_w or im.get_height() != w_h:
+            im.resize(w_w, w_h)
+        w_images.append(im)
+    water_text.create_from_images(w_images)
     var watermap_inv =[]
     for w in range(len(HeightMap)):
         

@@ -18,7 +18,7 @@ func load(file, dbdf=null):
     assert(signature == 2) #,"DBPFSubfile.load: not a CUR file")
     ind += 4
     # 4 bytes (unint32) - total file size
-    self.n_images = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+    self.n_images = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
     ind += 2
     for n in range(n_images):
         var entry = CUR_Entry.new()
@@ -26,14 +26,14 @@ func load(file, dbdf=null):
         ind += 1
         entry.height = raw_data[ind]
         ind +=3
-        entry.x_hotspot = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+        entry.x_hotspot = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
         ind += 2
-        entry.y_hotspot = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+        entry.y_hotspot = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
         entry.vec_hotspot = Vector2(entry.x_hotspot, entry.y_hotspot)
         ind += 2
-        entry.size = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        entry.size = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
-        entry.offset = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        entry.offset = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         entries.append(entry)
     for entry in entries:
@@ -45,19 +45,19 @@ func load(file, dbdf=null):
             entry.img  = Image.new()
             var img_data = raw_data.slice(ind, ind+entry.size)
             entry.img.load_png_from_buffer(img_data)
-        elif self.get_int_from_bytes(raw_data.slice(ind, ind+3)) == 40:
+        elif self.get_int_from_bytes(raw_data.slice(ind, ind+4)) == 40:
             ind += 4
-            var bmp_width = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+            var bmp_width = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
             ind += 4
-            var bmp_height = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+            var bmp_height = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
             ind += 6
-            var bpp = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+            var bpp = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
             ind += 2
-            #var comp_meth = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+            #var comp_meth = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
             ind += 4
-            var img_size = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+            var img_size = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
             ind += 12
-            #var n_colors = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+            #var n_colors = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
             ind += 8
             var bmp_size = (bpp/8) * bmp_width * bmp_height
             var bmp_header = [0x42, 0x4d, 
@@ -71,7 +71,7 @@ func load(file, dbdf=null):
             var temp_img = Image.new()
             temp_img.load_bmp_from_buffer(bmp_data)
             temp_img.decompress()
-            temp_img = temp_img.get_rect(Rect2(Vector2(0.0, 0.0), Vector2(bmp_width, bmp_width)))
+            temp_img = temp_img.get_region(Rect2i(Vector2i(0, 0), Vector2i(bmp_width, bmp_width)))
             var mask_data = raw_data.slice(ind+bmp_size, raw_data.size()-1)
             for i in range(bmp_width):
                 for j in range(0, bmp_width, 8):

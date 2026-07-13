@@ -111,27 +111,31 @@ func _ready():
                 if wnes == [0,2,11,2]:
                     print("debug")
                 self.transit_tiles[t_type][wnes].append(TransitTile.new(rul_edges, rul_ids, layer_inds))
-    var format = false
+    # Build the transit texture array (Godot 4 API: create_from_images). FSH
+    # images may be compressed (DXT) and differently sized, so normalise each to
+    # RGBA8 at the first layer's size before packing.
+    var images : Array[Image] = []
+    var ref_w := 0
+    var ref_h := 0
     for i in range(len(layer_arr)):
         var iid = layer_arr[i]
         var t_FSH = Core.subfile(0x7ab50e44, 0x1abe787d, iid+4, FSHSubfile)
-        if not format:
-            format = t_FSH.img.get_format()
-        if not self.textarr:
-            self.textarr = Texture2DArray.new()
-            self.textarr.create (
-                t_FSH.width, 
-                t_FSH.height, 
-                len(layer_arr), 
-                t_FSH.img.get_format(), 
-                2
-                )
-        if format != t_FSH.img.get_format():
-            print("TODO handle different formats, existing:", format, "\tnew:", t_FSH.img.get_format())
-        else:
-            textarr.set_layer_data(t_FSH.img, i)
+        var im : Image = t_FSH.img.duplicate()
+        if im.is_compressed():
+            im.decompress()
+        im.convert(Image.FORMAT_RGBA8)
+        if ref_w == 0:
+            ref_w = im.get_width()
+            ref_h = im.get_height()
+        elif im.get_width() != ref_w or im.get_height() != ref_h:
+            im.resize(ref_w, ref_h)
+        images.append(im)
+    if not images.is_empty():
+        self.textarr = Texture2DArray.new()
+        self.textarr.create_from_images(images)
     self.mat = self.get_material_override()
-    self.mat.set_shader_parameter("textarr", textarr)
+    if self.textarr:
+        self.mat.set_shader_parameter("textarr", textarr)
     self.add_child(drag_meshinst)
     #self.mat.set_shader_parameter("built", false)
     drag_meshinst.set_material_override(mat)

@@ -75,6 +75,9 @@ func save_thumbnail():
 
 func open_city():
     Boot.current_city = savefile
+    Boot.current_city_name = city_name
+    Boot.current_city_path = savefile.path
+    Boot.current_region_name = get_parent().get_parent().REGION_NAME
     var err = get_tree().change_scene_to_file("res://CityView/CityScene/City.tscn")
     if err != OK:
         print("Error trying to change the scene to the city")

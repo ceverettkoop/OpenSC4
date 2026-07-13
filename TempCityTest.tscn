@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://b8e5qf5u18ab6"]
+
+[ext_resource type="Script" path="res://TempCityTest.gd" id="1"]
+
+[node name="TempCityTest" type="Node"]
+script = ExtResource("1")

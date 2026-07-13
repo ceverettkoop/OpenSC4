@@ -17,32 +17,32 @@ func load(file, dbdf=null):
     ind = 0
     assert(len(raw_data) > 0) #,"DBPFSubfile.load: no data")
     # 4 bytes (char) - signature
-    var signature = raw_data.slice(ind, ind+3).get_string_from_ascii()
+    var signature = raw_data.slice(ind, ind+4).get_string_from_ascii()
     assert(signature == "EQZB") #,"DBPFSubfile.load: not an Exemplar file")
     ind += 4
     # 4 bytes - parent cohort indicator always 0x23232331
     ind += 4
-    self.parent_cohort["T"] = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    self.parent_cohort["T"] = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
-    self.parent_cohort["G"] = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    self.parent_cohort["G"] = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
-    self.parent_cohort["I"] = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    self.parent_cohort["I"] = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
-    self.num_properties = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    self.num_properties = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
     for _property in range(self.num_properties):
-        var key = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        var key = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         # 1 Byte spacing always 0x00
         ind += 1
-        var type = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        var type = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         var multi :bool = (type & 0xF000) > 0
         var format :int = type & 0xF
         var value
         var length = 1
         if multi:
-            length = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+            length = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
             ind += 4
             if format == 0xC: #string
                 value = raw_data.slice(ind, ind+(length-1)).get_string_from_ascii()
@@ -77,15 +77,15 @@ func val_from_format(format):
         ind += 1
         return val
     elif format == 0x2: #Uint16 not used?
-        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
         ind += 2
         return val
     elif format == 0x3: #Uint32
-        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         return val
     elif format == 0x4:  #Uint64? not used?
-        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+7))
+        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+8))
         ind += 8
         return val
     elif format == 0x5: #int8? not used?
@@ -93,23 +93,23 @@ func val_from_format(format):
         ind += 1
         return val
     elif format == 0x6: #int16? not used?
-        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
         ind += 2
         return val
     elif format == 0x7: #int32? not used?
-        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         return val
     elif format == 0x8: #int64? not used?
-        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+7))
+        var val = self.get_int_from_bytes(raw_data.slice(ind, ind+8))
         ind += 8
         return val
     elif format == 0x9: #float32
-        var val = self.get_float_from_bytes(raw_data.slice(ind, ind+3))
+        var val = self.get_float_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         return val
     elif format == 0xA: #float64?
-        var val = self.get_float_from_bytes(raw_data.slice(ind, ind+7))
+        var val = self.get_float_from_bytes(raw_data.slice(ind, ind+8))
         ind += 8
         return val
     elif format == 0xB: #bool
@@ -119,6 +119,22 @@ func val_from_format(format):
     else:
         print("ERROR, unkown format: %d", format)
         
+const S3D_TYPE : int = 0x5ad0e817
+
+# Returns the [type, group, instance] of this exemplar's S3D model, or null.
+# Works across every ResourceKeyType variant (RKT0/1/4/5) by scanning property
+# values for the S3D type marker and reading the following two ids as group and
+# instance -- the same approach as tools/dat_dump.py scan_s3d_refs().
+func get_model_tgi():
+    for key in self.properties.keys():
+        var value = self.properties[key]
+        if typeof(value) != TYPE_ARRAY:
+            continue
+        for i in range(value.size() - 2):
+            if value[i] == S3D_TYPE:
+                return [value[i], value[i + 1], value[i + 2]]
+    return null
+
 func key_description(key):
     if len(self.keys_dict) == 0:
         var file = FileAccess.open("res://exemplar_types.dict", FileAccess.READ)

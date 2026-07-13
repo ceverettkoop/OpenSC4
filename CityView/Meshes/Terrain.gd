@@ -104,8 +104,21 @@ func build_image_dict_and_texture_array(textures):
                 max_width = fsh_subfile.width
                 height = fsh_subfile.height
     
+    # Build the layer images in images_dict order (== the layer order assigned by
+    # create_ind_to_layer, which the terrain shader indexes into), normalised to a
+    # common RGBA8 size. Packed via create_from_images (Godot 4 API).
+    var images : Array[Image] = []
+    for key in images_dict:
+        var im : Image = images_dict[key].img.duplicate()
+        if im.is_compressed():
+            im.decompress()
+        im.convert(Image.FORMAT_RGBA8)
+        if im.get_width() != max_width or im.get_height() != height:
+            im.resize(max_width, height)
+        images.append(im)
     var texture_array = Texture2DArray.new()
-    texture_array.create (max_width, height, len(textures) * 5, list_texture_format[0], 2)
+    if not images.is_empty():
+        texture_array.create_from_images(images)
     return {
         "texture_array":texture_array,
         "images_dict": images_dict
@@ -121,8 +134,7 @@ func create_ind_to_layer(config, images_dict, texture_array):
     var bot_edge
     
     for key in images_dict:
-        var image = images_dict[key].img
-        texture_array.set_layer_data(image, layer)
+        # Layers were already packed in images_dict order by create_from_images.
         if key < 256:
             dict[key] = layer
             if key == cliff_index:
@@ -135,9 +147,6 @@ func create_ind_to_layer(config, images_dict, texture_array):
                 mid_edge = layer
             elif key == 21:
                 bot_edge = layer
-        var test = texture_array.get_layer_data(layer)
-        if len(test.data["data"]) == 0:
-            Log.error("failed to load layer %s with image %s" % [layer, key])
         layer += 1
     
     self.mat.set_shader_parameter("cliff_ind", float(cliff_index))

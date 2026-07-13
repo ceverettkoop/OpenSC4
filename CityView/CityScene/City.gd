@@ -6,10 +6,15 @@ var rng : RandomNumberGenerator = RandomNumberGenerator.new()
 var savefile
 var width
 var height
+var city_name : String
+var city_path : String
+var region_name : String
 const TILE_SIZE : int = 16
 const WATER_HEIGHT : float = 250.0 / TILE_SIZE
 # stores where tiles are in the vertex, uv and normal arrays
 var terr_tile_ind = {}
+# heightmap (metres) kept for building placement; indexed [z][x] like the terrain build
+var height_map : Array = []
 # translator from fsh-iid to texturearray layer
 var ind_layer
 # for cursor
@@ -19,6 +24,9 @@ var vec_hot
 func _ready():
     rng.randomize()
     savefile = Boot.current_city
+    city_name = Boot.current_city_name
+    city_path = Boot.current_city_path
+    region_name = Boot.current_region_name
     create_terrain()
     set_cursor()
     pass
@@ -266,6 +274,7 @@ func create_terrain():
         heightmap = load_city_terrain(savefile)
     else:
         heightmap = gen_random_terrain(size_w * 64 + 1, size_h * 64 + 1)
+    self.height_map = heightmap
     $Node3D/WaterPlane.generate_wateredges(heightmap)
     var tiles_w = size_w * 64
     var tiles_h = size_h * 64
@@ -393,22 +402,80 @@ func create_terrain():
     warray_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, warrays)
     $Node3D/WaterPlane.mesh = warray_mesh
     
-    "test s3d"
-    var TGI_s3d = {"T": 0x5ad0e817, "G": 0xbadb57f1, "I":0x16620430}
-    var s3dobj = Core.subfile(TGI_s3d["T"], TGI_s3d["G"], TGI_s3d["I"], S3DSubfile)
-    var location = Vector3(width/2, heightmap[int(width/2)][int(self.height/2)] / TILE_SIZE, self.height/2)
-    for x in range(5):
-        for z in range(5):
-            var x_rand = (x-2.5) + randf()
-            var z_rand = (z-2.5) + randf()
-            var loc_rand = location + Vector3(x_rand, 0, z_rand)
-            s3dobj.add_to_mesh($Node3D/TestS3D, loc_rand)
-    test_exemplar()
-    var s3dmat = $Node3D/TestS3D.get_material_override()
-    s3dmat.set_shader_parameter("nois_texture", $Node3D/WaterPlane/NoiseTexture.texture)
-    $Node3D/TestS3D.set_material_override(s3dmat)
-    print("DEBUG")
-    
+    if savefile != null:
+        load_buildings()
+
+# Reads the city's Building occupant subfile and renders each placed building:
+# occupant record -> building exemplar -> RKT -> S3D model (cached per model),
+# instanced at the record's world position on the terrain.
+func load_buildings():
+    var bindex = savefile.indices_by_type.get(0xa9bd882d, [])
+    if bindex.is_empty():
+        Log.info("City has no building subfile")
+        return
+    var idx = bindex[0]
+    var bsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, BuildingSubfile)
+    Log.info("Building subfile: %d records" % bsub.records.size())
+
+    var root = Node3D.new()
+    root.name = "Buildings"
+    $Node3D.add_child(root)
+    var base_mat : ShaderMaterial = $Node3D/TestS3D.get_material_override()
+    var noise_tex = $Node3D/WaterPlane/NoiseTexture.texture
+
+    var model_cache = {}      # S3D TGI string -> {"mesh":, "material":} (or null)
+    var placed = 0
+    var no_model = 0
+    for rec in bsub.records:
+        var model = _model_for_exemplar(rec.exemplar_tgi, model_cache, base_mat, noise_tex)
+        if model == null:
+            no_model += 1
+            continue
+        var mi = MeshInstance3D.new()
+        mi.mesh = model["mesh"]
+        mi.material_override = model["material"]
+        var x = rec.pos_x / TILE_SIZE
+        var z = rec.pos_z / TILE_SIZE
+        mi.position = Vector3(x, _height_at(x, z), z)
+        root.add_child(mi)
+        placed += 1
+    Log.info("Placed %d buildings (%d without a resolvable model)" % [placed, no_model])
+
+# Resolves a building exemplar to a cached model, loading + building it on first use.
+func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : ShaderMaterial, noise_tex):
+    if not Core.subfile_indices.has(SubfileTGI.TGI2str(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2])):
+        return null
+    var exemplar = Core.subfile(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2], ExemplarSubfile)
+    var model_tgi = exemplar.get_model_tgi()
+    if model_tgi == null:
+        return null
+    var key = SubfileTGI.TGI2str(model_tgi[0], model_tgi[1], model_tgi[2])
+    if cache.has(key):
+        return cache[key]
+    if not Core.subfile_indices.has(key):
+        cache[key] = null
+        return null
+    var s3d = Core.subfile(model_tgi[0], model_tgi[1], model_tgi[2], S3DSubfile)
+    var built = s3d.build_instance()
+    if built == null:
+        cache[key] = null
+        return null
+    var mat = base_mat.duplicate()
+    mat.set_shader_parameter("s3dtexture", built["texture"])
+    mat.set_shader_parameter("nois_texture", noise_tex)
+    var model = {"mesh": built["mesh"], "material": mat}
+    cache[key] = model
+    return model
+
+# Terrain altitude (world units) at tile coordinate (x, z), matching create_terrain's
+# heightmap[z][x] convention; clamps to the map edges.
+func _height_at(x : float, z : float) -> float:
+    var iz = clamp(int(z), 0, self.height_map.size() - 1)
+    if self.height_map.is_empty() or self.height_map[iz].is_empty():
+        return 0.0
+    var ix = clamp(int(x), 0, self.height_map[iz].size() - 1)
+    return self.height_map[iz][ix] / TILE_SIZE
+
 func set_cursor():
     var TGI_cur = {"T": 0xaa5c3144, "G": 0x00000032, "I":0x13b138d0}
     self.vec_hot = Core.subfile(TGI_cur["T"], TGI_cur["G"], TGI_cur["I"], CURSubfile).entries[0].vec_hotspot

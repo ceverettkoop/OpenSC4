@@ -49,3 +49,4 @@ readme.txt
 Apps/LUURT-config-log.txt
 Apps/dgVoodoo.conf
 tropod_Properties.xml
+tools/__pycache__/*

@@ -16,15 +16,15 @@ func load(file, dbdf=null):
     var ind = 0
     assert(len(raw_data) > 0) #,"DBPFSubfile.load: no data")
     # 4 bytes (char) - signature
-    var signature = raw_data.slice(ind, ind+3).get_string_from_ascii()
+    var signature = raw_data.slice(ind, ind+4).get_string_from_ascii()
     assert(signature == "3DMD") #,"DBPFSubfile.load: not an FSH file")
     ind += 4
     # 4 bytes ? seems size and complexity related
     ind += 4
     "-HEAD block-"
-    var h_head =  raw_data.slice(ind, ind+3).get_string_from_ascii()
+    var h_head =  raw_data.slice(ind, ind+4).get_string_from_ascii()
     ind += 4
-    var h_length = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var h_length = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
     # seems to be always 1, might be anim related?
     ind += 2
@@ -35,11 +35,11 @@ func load(file, dbdf=null):
         ind = h_length + 8
         
     "-VERT block-"
-    var v_vert =  raw_data.slice(ind, ind+3).get_string_from_ascii()
+    var v_vert =  raw_data.slice(ind, ind+4).get_string_from_ascii()
     ind += 4
     # seems field length for single group fields but gets freaky for multiple groups and animations
     ind += 4
-    var v_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var v_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
     var vertices = PackedVector3Array([])
     var UVs = PackedVector2Array([])
@@ -48,40 +48,40 @@ func load(file, dbdf=null):
         self.groups.append(group)
         # 2 Bytes always 0?
         ind += 2
-        var vert_count : int = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+        var vert_count : int = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
         ind += 2
-        var format : int = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        var format : int = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         for _i in range(vert_count):
-            var x = self.get_float_from_bytes(raw_data.slice(ind, ind+3))/16.0
+            var x = self.get_float_from_bytes(raw_data.slice(ind, ind+4))/16.0
             ind += 4
-            var y = self.get_float_from_bytes(raw_data.slice(ind, ind+3))/16.0
+            var y = self.get_float_from_bytes(raw_data.slice(ind, ind+4))/16.0
             ind += 4
-            var z = self.get_float_from_bytes(raw_data.slice(ind, ind+3))/16.0
+            var z = self.get_float_from_bytes(raw_data.slice(ind, ind+4))/16.0
             ind += 4
             vertices.append(Vector3(x, y, z))
-            var u = self.get_float_from_bytes(raw_data.slice(ind, ind+3))
+            var u = self.get_float_from_bytes(raw_data.slice(ind, ind+4))
             ind += 4
-            var v = self.get_float_from_bytes(raw_data.slice(ind, ind+3))
+            var v = self.get_float_from_bytes(raw_data.slice(ind, ind+4))
             ind += 4
             UVs.append(Vector2(u, v))
     
     "-INDX block-"
-    var i_indx =  raw_data.slice(ind, ind+3).get_string_from_ascii()
+    var i_indx =  raw_data.slice(ind, ind+4).get_string_from_ascii()
     ind += 4
-    var i_length = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var i_length = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
-    var i_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var i_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
     for grpind in range(i_grpcnt):
         # always 0?
         ind += 2
         # always 2?
         ind += 2
-        var indxcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+        var indxcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
         ind += 2
         for _indxind in range(indxcnt):
-            var vert_indx = self.get_int_from_bytes(raw_data.slice(ind, ind+1))
+            var vert_indx = self.get_int_from_bytes(raw_data.slice(ind, ind+2))
             ind += 2
             var verts_tmp = self.groups[grpind].vertices
             verts_tmp.append(vertices[vert_indx])
@@ -91,14 +91,14 @@ func load(file, dbdf=null):
             self.groups[grpind].UVs = UVs_tmp
     
     "-PRIM block-: this does nothing as everything seems to always just be triangles"
-    var p_prim = raw_data.slice(ind, ind+3).get_string_from_ascii()
+    var p_prim = raw_data.slice(ind, ind+4).get_string_from_ascii()
     ind += 4
-    var p_length = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var p_length = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
-    var p_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var p_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
     for grpind in range(p_grpcnt):
-        var p_type = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        var p_type = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         if p_type != 1:
             print("unexpected primary type in %d", self.index.instance_id)
@@ -108,11 +108,11 @@ func load(file, dbdf=null):
         ind += 4
     
     "-MATS block-"
-    var m_mats = raw_data.slice(ind, ind+3).get_string_from_ascii()
+    var m_mats = raw_data.slice(ind, ind+4).get_string_from_ascii()
     ind += 4
-    var m_length = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var m_length = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
-    var m_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+    var m_grpcnt = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
     ind += 4
     for grpind in range(m_grpcnt):
         var settings = raw_data[ind]
@@ -137,11 +137,11 @@ func load(file, dbdf=null):
         ind += 1
         self.groups[grpind].destblend = raw_data[ind]
         ind += 1
-        self.groups[grpind].alphathreshold = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        self.groups[grpind].alphathreshold = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         # 4 Bytes 0x01000000 some mask?
         ind += 4
-        self.groups[grpind].mat_id = self.get_int_from_bytes(raw_data.slice(ind, ind+3))
+        self.groups[grpind].mat_id = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
         ind += 4
         self.groups[grpind].wrapmodeU = raw_data[ind]
         ind += 1
@@ -195,6 +195,51 @@ func add_to_mesh(mesh: MeshInstance3D, location: Vector3):
     mat.set_shader_parameter("s3dtexture", textarr)
     mesh.set_material_override(mat)
     
+# Builds a reusable, origin-centred model: an ArrayMesh in the S3D's own local
+# space plus a Texture2DArray of its group textures. Unlike add_to_mesh (which
+# bakes a single world location and mutates a passed node), this returns the
+# resources so one model can be instanced many times across a city.
+# Returns {"mesh": ArrayMesh, "texture": Texture2DArray} or null if empty.
+func build_instance():
+    if self.groups.is_empty():
+        return null
+    var images = []
+    for group in self.groups:
+        images.append(get_texture_from_mat_id(group.mat_id))
+    if images.is_empty() or self.formats.is_empty():
+        return null
+    # Texture2DArray requires every layer to share one size and format.
+    var fmt = self.formats[0]
+    var w = self.max_text_width
+    var h = self.max_text_height
+    var prepared : Array[Image] = []
+    for img in images:
+        var im = img
+        if im.get_format() != fmt:
+            im = im.duplicate()
+            im.convert(fmt)
+        if im.get_width() != w or im.get_height() != h:
+            if im == img:
+                im = img.duplicate()
+            im.resize(w, h)
+        prepared.append(im)
+    var textarr = Texture2DArray.new()
+    textarr.create_from_images(prepared)
+
+    var vertices = PackedVector3Array([])
+    var UVs = PackedVector2Array([])
+    for group in self.groups:
+        for vertind in range(group.vertices.size() - 1, -1, -1):
+            vertices.append(group.vertices[vertind])
+            UVs.append(group.UVs[vertind])
+    var array_mesh : ArrayMesh = ArrayMesh.new()
+    var arrays : Array = []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = vertices
+    arrays[ArrayMesh.ARRAY_TEX_UV] = UVs
+    array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    return {"mesh": array_mesh, "texture": textarr}
+
 func get_texture_from_mat_id(iid):
     var fsh_subfile = Core.subfile(
                         0x7ab50e44, 0x1ABE787D, iid, FSHSubfile
