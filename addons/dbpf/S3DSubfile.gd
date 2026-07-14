@@ -215,7 +215,12 @@ func build_instance():
         return null
     var images = []
     for group in self.groups:
-        images.append(get_texture_from_mat_id(group.mat_id))
+        var img = get_texture_from_mat_id(group.mat_id)
+        if img == null:
+            # A group's texture isn't in the loaded DATs (happens for some zoom
+            # LODs). Bail so the caller can fall back to a different LOD.
+            return null
+        images.append(img)
     if images.is_empty() or self.formats.is_empty():
         return null
     # Texture2DArray requires every layer to share one size and format.
@@ -265,6 +270,8 @@ func get_texture_from_mat_id(iid):
     var fsh_subfile = Core.subfile(
                         0x7ab50e44, 0x1ABE787D, iid, FSHSubfile
                         )
+    if fsh_subfile == null:
+        return null
     if self.max_text_width < fsh_subfile.width:
         self.max_text_width = fsh_subfile.width
     if self.max_text_height < fsh_subfile.height:

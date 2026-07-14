@@ -135,6 +135,25 @@ func get_model_tgi():
                 return [value[i], value[i + 1], value[i + 2]]
     return null
 
+# Returns every S3D [type, group, instance] reference embedded in this exemplar's
+# array-valued properties, each tagged with the property key (RKT variant) it came
+# from. The key matters: an RKT1 (0x27812821) ref is a *base* instance that fans
+# out to 5 zoom x 4 rotation models, so the caller must offset it to pick an LOD.
+func get_all_model_refs() -> Array:
+    var refs = []
+    for key in self.properties.keys():
+        var value = self.properties[key]
+        if typeof(value) != TYPE_ARRAY:
+            continue
+        var i = 0
+        while i <= value.size() - 3:
+            if value[i] == S3D_TYPE:
+                refs.append({"prop_key": key, "tgi": [value[i], value[i + 1], value[i + 2]]})
+                i += 3   # skip past the triple we just consumed
+            else:
+                i += 1
+    return refs
+
 func key_description(key):
     if len(self.keys_dict) == 0:
         var file = FileAccess.open("res://exemplar_types.dict", FileAccess.READ)

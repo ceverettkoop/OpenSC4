@@ -440,30 +440,57 @@ func load_buildings():
         placed += 1
     Log.info("Placed %d buildings (%d without a resolvable model)" % [placed, no_model])
 
-# Resolves a building exemplar to a cached model, loading + building it on first use.
+# SC4 building models are referenced via ResourceKeyType1 (RKT1, exemplar property
+# 0x27812821): the stored instance id is a BASE, and the real S3D models fan out as
+# 5 zoom levels x 4 rotations, encoded  iid = base + (zoom << 8) + (rotation << 4).
+# The base itself is zoom 0 (coarsest LOD), which is why buildings rendered blurry.
+const RKT1_PROP : int = 0x27812821
+const LOD_ZOOM : int = 4        # highest detail; modern HW renders full LOD at all camera distances
+const LOD_ROTATION : int = 0
+
+# Ordered list of candidate model TGIs for an exemplar's S3D reference, highest
+# LOD first. For RKT1 refs that's zoom 4 -> 0 (rotation 0); a non-RKT1 / explicit
+# ref is its single self. Not every zoom's S3D or its textures are present in the
+# loaded DATs, so the caller tries these in order and takes the first that builds.
+func _lod_candidates(ref : Dictionary) -> Array:
+    var tgi : Array = ref["tgi"]
+    if ref["prop_key"] != RKT1_PROP:
+        return [tgi]
+    var out = []
+    for zoom in range(LOD_ZOOM, -1, -1):
+        out.append([tgi[0], tgi[1], tgi[2] + (zoom << 8) + (LOD_ROTATION << 4)])
+    return out
+
+# Resolves a building exemplar to a cached model, loading + building it on first
+# use. Falls back down the LOD list when the highest zoom's S3D or textures are
+# missing from the loaded DATs.
 func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : ShaderMaterial):
     if not Core.subfile_indices.has(SubfileTGI.TGI2str(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2])):
         return null
     var exemplar = Core.subfile(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2], ExemplarSubfile)
-    var model_tgi = exemplar.get_model_tgi()
-    if model_tgi == null:
+    var refs = exemplar.get_all_model_refs()
+    if refs.is_empty():
         return null
-    var key = SubfileTGI.TGI2str(model_tgi[0], model_tgi[1], model_tgi[2])
-    if cache.has(key):
-        return cache[key]
-    if not Core.subfile_indices.has(key):
-        cache[key] = null
-        return null
-    var s3d = Core.subfile(model_tgi[0], model_tgi[1], model_tgi[2], S3DSubfile)
-    var built = s3d.build_instance()
-    if built == null:
-        cache[key] = null
-        return null
-    var mat = base_mat.duplicate()
-    mat.set_shader_parameter("s3dtexture", built["texture"])
-    var model = {"mesh": built["mesh"], "material": mat}
-    cache[key] = model
-    return model
+    for model_tgi in _lod_candidates(refs[0]):
+        var key = SubfileTGI.TGI2str(model_tgi[0], model_tgi[1], model_tgi[2])
+        if cache.has(key):
+            if cache[key] != null:
+                return cache[key]
+            continue                       # known-unbuildable at this LOD, try next
+        if not Core.subfile_indices.has(key):
+            cache[key] = null
+            continue
+        var s3d = Core.subfile(model_tgi[0], model_tgi[1], model_tgi[2], S3DSubfile)
+        var built = s3d.build_instance()
+        if built == null:
+            cache[key] = null
+            continue
+        var mat = base_mat.duplicate()
+        mat.set_shader_parameter("s3dtexture", built["texture"])
+        var model = {"mesh": built["mesh"], "material": mat}
+        cache[key] = model
+        return model
+    return null
 
 # Terrain altitude (world units) at tile coordinate (x, z), matching create_terrain's
 # heightmap[z][x] convention; clamps to the map edges.
