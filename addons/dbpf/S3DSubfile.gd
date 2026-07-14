@@ -268,6 +268,98 @@ func build_instance():
     array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
     return {"mesh": array_mesh, "texture": textarr}
 
+# Composites several rotation variants of a model into one full-3D mesh. SC4
+# rotation models are 2.5D -- each only models the two walls + roof facing its own
+# fixed isometric camera, so a single variant is hollow from behind. The variants
+# are the same building pre-rotated by rot*90 about the vertical axis at the origin,
+# so rotating each back by its own angle re-aligns them; merging then fills in all
+# four walls. `variants` is a list of {"s3d": S3DSubfile, "angle": float (radians),
+# "walls_only": bool}. A walls_only variant contributes only near-vertical faces, so
+# a secondary variant fills in the missing walls without its roof z-fighting the
+# primary's. Returns {"mesh":, "texture":} or {} if any texture is missing.
+static func build_composite(variants : Array) -> Dictionary:
+    # Gather every contributing group's source image + geometry, tagged with the
+    # Texture2DArray layer it will occupy.
+    var groups_out = []   # {layer, verts, uvs, angle, walls_only, scale}
+    var images = []
+    for vrec in variants:
+        for group in vrec["s3d"].groups:
+            var fsh = Core.subfile(0x7ab50e44, 0x1ABE787D, group.mat_id, FSHSubfile)
+            if fsh == null:
+                return {}   # missing texture -> let the caller fall back to a lower LOD
+            images.append(fsh.img)
+            groups_out.append({
+                "layer": images.size() - 1,
+                "verts": group.vertices,
+                "uvs": group.UVs,
+                "angle": vrec["angle"],
+                "walls_only": vrec["walls_only"],
+                "scale": vrec.get("scale", 1.0),
+            })
+    if images.is_empty():
+        return {}
+    # Every Texture2DArray layer must share one size + format (RGBA8, per build_instance).
+    var w = 0
+    var h = 0
+    for im0 in images:
+        w = max(w, im0.get_width())
+        h = max(h, im0.get_height())
+    var prepared : Array[Image] = []
+    for im0 in images:
+        var im = im0.duplicate()
+        if im.is_compressed():
+            im.decompress()
+        im.convert(Image.FORMAT_RGBA8)
+        if im.get_width() != w or im.get_height() != h:
+            im.resize(w, h)
+        prepared.append(im)
+    var textarr = Texture2DArray.new()
+    textarr.create_from_images(prepared)
+
+    var vertices = PackedVector3Array([])
+    var UVs = PackedVector2Array([])
+    var layers = PackedColorArray([])
+    for g in groups_out:
+        var basis := Basis(Vector3.UP, g["angle"])
+        var sc : float = g["scale"]
+        var lf : float = float(g["layer"]) / 255.0
+        var gv = g["verts"]
+        var gu = g["uvs"]
+        # Re-align to the canonical orientation (keeping build_instance's reversed
+        # winding), then inset in XZ by `scale`: nesting successive variants slightly
+        # inward makes overlapping walls resolve by depth (rotation 0 wins) instead
+        # of z-fighting, while fill-in walls still show where rotation 0 is absent.
+        var rv = []
+        var ru = []
+        for k in range(gv.size() - 1, -1, -1):
+            var p : Vector3 = basis * gv[k]
+            p.x *= sc
+            p.z *= sc
+            rv.append(p)
+            ru.append(gu[k])
+        var t = 0
+        while t + 2 < rv.size():
+            if g["walls_only"]:
+                var n : Vector3 = (rv[t + 1] - rv[t]).cross(rv[t + 2] - rv[t]).normalized()
+                if abs(n.y) > 0.6:   # roof/floor/ground -- skip; keep only walls
+                    t += 3
+                    continue
+            for j in range(3):
+                vertices.append(rv[t + j])
+                UVs.append(ru[t + j])
+                layers.append(Color(lf, 0.0, 0.0, 1.0))
+            t += 3
+    if vertices.is_empty():
+        return {}
+    var array_mesh : ArrayMesh = ArrayMesh.new()
+    var arrays : Array = []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = vertices
+    arrays[ArrayMesh.ARRAY_TEX_UV] = UVs
+    arrays[ArrayMesh.ARRAY_COLOR] = layers
+    array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    return {"mesh": array_mesh, "texture": textarr}
+
 func get_texture_from_mat_id(iid):
     var fsh_subfile = Core.subfile(
                         0x7ab50e44, 0x1ABE787D, iid, FSHSubfile

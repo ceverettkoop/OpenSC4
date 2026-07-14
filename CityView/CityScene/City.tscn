@@ -298,7 +298,9 @@ code = "shader_type spatial;
 // SC4 building sprites have lighting baked into the texture, and build_instance()
 // generates no vertex normals -- so the models must be drawn unshaded, otherwise
 // scene lighting renders them dark or fully black.
-render_mode depth_draw_always, unshaded;
+// cull_disabled: composited models mix winding orders, and 2.5D walls should show
+// from both sides, so draw double-sided.
+render_mode depth_draw_always, unshaded, cull_disabled;
 
 uniform sampler2DArray s3dtexture : source_color;
 

@@ -471,7 +471,9 @@ func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : Sh
     var refs = exemplar.get_all_model_refs()
     if refs.is_empty():
         return null
-    for model_tgi in _lod_candidates(refs[0]):
+    var ref = refs[0]
+    var is_rkt1 = (ref["prop_key"] == RKT1_PROP)
+    for model_tgi in _lod_candidates(ref):
         var key = SubfileTGI.TGI2str(model_tgi[0], model_tgi[1], model_tgi[2])
         if cache.has(key):
             if cache[key] != null:
@@ -480,9 +482,8 @@ func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : Sh
         if not Core.subfile_indices.has(key):
             cache[key] = null
             continue
-        var s3d = Core.subfile(model_tgi[0], model_tgi[1], model_tgi[2], S3DSubfile)
-        var built = s3d.build_instance()
-        if built == null:
+        var built = _build_model(model_tgi, is_rkt1)
+        if built.is_empty():
             cache[key] = null
             continue
         var mat = base_mat.duplicate()
@@ -491,6 +492,27 @@ func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : Sh
         cache[key] = model
         return model
     return null
+
+# Builds the renderable mesh+texture for a rotation-0 S3D TGI. RKT1 models are 2.5D
+# per rotation, so this composites rotation 0 (full: walls + roof) with rotation 2
+# (walls only, turned 180 degrees) into a four-walled mesh. Non-RKT1 / explicit
+# models have no rotation family and use their single variant as-is. Returns {} if
+# the model's textures aren't in the loaded DATs (caller falls back to a lower LOD).
+func _build_model(rot0_tgi : Array, is_rkt1 : bool) -> Dictionary:
+    var s3d0 = Core.subfile(rot0_tgi[0], rot0_tgi[1], rot0_tgi[2], S3DSubfile)
+    # Rotation 0 provides the full model (walls + roof). The other three rotations,
+    # turned back to canonical (+rot*90 deg) and reduced to their walls, fill in the
+    # remaining sides and corners without their roofs z-fighting rotation 0's.
+    var variants = [{"s3d": s3d0, "angle": 0.0, "walls_only": false, "scale": 1.0}]
+    if is_rkt1:
+        # rotation -> [canonicalizing angle, XZ inset]. The inset nests each variant
+        # a hair inside the last so overlapping walls resolve by depth, not z-fight.
+        for spec in [[1, PI / 2.0, 0.99], [2, PI, 0.98], [3, -PI / 2.0, 0.97]]:
+            var iid = rot0_tgi[2] + (spec[0] << 4)
+            if Core.subfile_indices.has(SubfileTGI.TGI2str(rot0_tgi[0], rot0_tgi[1], iid)):
+                var s3d = Core.subfile(rot0_tgi[0], rot0_tgi[1], iid, S3DSubfile)
+                variants.append({"s3d": s3d, "angle": spec[1], "walls_only": true, "scale": spec[2]})
+    return S3DSubfile.build_composite(variants)
 
 # Terrain altitude (world units) at tile coordinate (x, z), matching create_terrain's
 # heightmap[z][x] convention; clamps to the map edges.
