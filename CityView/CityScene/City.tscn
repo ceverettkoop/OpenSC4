@@ -295,7 +295,10 @@ shader = SubResource("4")
 
 [sub_resource type="Shader" id="16"]
 code = "shader_type spatial;
-render_mode depth_draw_always;
+// SC4 building sprites have lighting baked into the texture, and build_instance()
+// generates no vertex normals -- so the models must be drawn unshaded, otherwise
+// scene lighting renders them dark or fully black.
+render_mode depth_draw_always, unshaded;
 
 uniform sampler2DArray s3dtexture : source_color;
 
