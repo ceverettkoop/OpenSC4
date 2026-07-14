@@ -223,19 +223,21 @@ func build_instance():
         images.append(img)
     if images.is_empty() or self.formats.is_empty():
         return null
-    # Texture2DArray requires every layer to share one size and format.
-    var fmt = self.formats[0]
+    # Decompress to RGBA8. The FSH textures are DXT1 (BC1), whose 1-bit
+    # punch-through alpha marks the sprite's transparent background. Godot uploads
+    # FORMAT_DXT1 to the GPU as an OPAQUE BC1 format, so that alpha is ignored and
+    # the transparent (pure-black) texels render as solid black boxes. Decompressing
+    # to RGBA8 here preserves the alpha the GPU sampler needs. Every Texture2DArray
+    # layer must also share one size.
     var w = self.max_text_width
     var h = self.max_text_height
     var prepared : Array[Image] = []
     for img in images:
-        var im = img
-        if im.get_format() != fmt:
-            im = im.duplicate()
-            im.convert(fmt)
+        var im = img.duplicate()
+        if im.is_compressed():
+            im.decompress()
+        im.convert(Image.FORMAT_RGBA8)
         if im.get_width() != w or im.get_height() != h:
-            if im == img:
-                im = img.duplicate()
             im.resize(w, h)
         prepared.append(im)
     var textarr = Texture2DArray.new()
