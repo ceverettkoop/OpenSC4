@@ -403,7 +403,120 @@ func create_terrain():
     $Node3D/WaterPlane.mesh = warray_mesh
     
     if savefile != null:
+        load_lots()
+        load_lot_textures()
         load_buildings()
+
+# Parsed LotSubfile records (tile rects, zoning, wealth, orientation). No direct
+# rendering: SC4 denormalizes a lot's visuals into the building/prop/flora/
+# base-texture subfiles. Kept as the authority for zone overlays, foundations
+# and simulation work.
+var lots : Array = []
+
+func load_lots():
+    var lindex = savefile.indices_by_type.get(0xc9bd5d4a, [])
+    if lindex.is_empty():
+        Log.info("City has no lot subfile")
+        return
+    var idx = lindex[0]
+    var lsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, LotSubfile)
+    lots = lsub.records
+    var zones = {}
+    for rec in lots:
+        zones[rec.zone_type] = zones.get(rec.zone_type, 0) + 1
+    Log.info("Lot subfile: %d lots, zone histogram %s" % [lots.size(), zones])
+
+# FSH group holding lot base/overlay ground textures; instance = family + zoom 0..4.
+const LOT_TEXTURE_GROUP : int = 0x0986135e
+const LOT_TEXTURE_ZOOM : int = 4        # highest-res variant, fall back coarser
+
+# Reads the city's lot base-texture subfile (the lawn/pavement/dirt under each
+# developed lot) and renders it as terrain-hugging tile quads, batched into one
+# mesh per texture family. Tile coords are absolute city tiles; each entry's
+# orientation rotates the UVs; priority lifts overlays above their base.
+func load_lot_textures():
+    var tindex = savefile.indices_by_type.get(0xc97f987c, [])
+    if tindex.is_empty():
+        Log.info("City has no lot base-texture subfile")
+        return
+    var idx = tindex[0]
+    var tsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, LotBaseTextureSubfile)
+    Log.info("Lot base-texture subfile: %d tile entries" % tsub.tiles.size())
+
+    var root = Node3D.new()
+    root.name = "LotTextures"
+    $Node3D.add_child(root)
+
+    # Batch tiles by texture family so each family is one mesh + one material.
+    var by_family = {}
+    for t in tsub.tiles:
+        if not by_family.has(t.iid):
+            by_family[t.iid] = []
+        by_family[t.iid].append(t)
+
+    var missing = 0
+    for iid in by_family.keys():
+        var tex = _lot_texture(iid)
+        if tex == null:
+            missing += 1
+            continue
+        var verts = PackedVector3Array()
+        var uvs = PackedVector2Array()
+        var colors = PackedColorArray()
+        var indices = PackedInt32Array()
+        for t in by_family[iid]:
+            var lift = 0.015 + 0.004 * (t.priority & 7)   # keep overlays above base
+            var base = verts.size()
+            for corner in [[0, 0], [0, 1], [1, 1], [1, 0]]:
+                var cx = t.x + corner[0]
+                var cz = t.z + corner[1]
+                verts.append(Vector3(cx, _corner_height(cx, cz) + lift, cz))
+                colors.append(t.color)
+            # UV corners for orientation 0, rotated a quarter-turn per step.
+            var uv_corners = [Vector2(0, 0), Vector2(0, 1), Vector2(1, 1), Vector2(1, 0)]
+            for c in range(4):
+                uvs.append(uv_corners[(c + t.orientation) % 4])
+            for i in [0, 1, 2, 0, 2, 3]:
+                indices.append(base + i)
+        var arrays = []
+        arrays.resize(ArrayMesh.ARRAY_MAX)
+        arrays[ArrayMesh.ARRAY_VERTEX] = verts
+        arrays[ArrayMesh.ARRAY_TEX_UV] = uvs
+        arrays[ArrayMesh.ARRAY_COLOR] = colors
+        arrays[ArrayMesh.ARRAY_INDEX] = indices
+        var mesh = ArrayMesh.new()
+        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+        var mat = StandardMaterial3D.new()
+        mat.albedo_texture = tex
+        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        mat.vertex_color_use_as_albedo = true
+        mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+        mesh.surface_set_material(0, mat)
+        var mi = MeshInstance3D.new()
+        mi.mesh = mesh
+        root.add_child(mi)
+    if missing > 0:
+        Log.warn("load_lot_textures: %d texture families missing from the DATs" % missing)
+
+# Resolves a lot-texture family iid to an ImageTexture, preferring the sharpest
+# zoom variant present in the loaded DATs. Returns null if none exist.
+func _lot_texture(family_iid : int) -> Variant:
+    var candidates = []
+    for z in range(LOT_TEXTURE_ZOOM, -1, -1):
+        candidates.append(family_iid + z)
+    candidates.append(family_iid)
+    for cand in candidates:
+        if Core.subfile_indices.has(SubfileTGI.TGI2str(0x7ab50e44, LOT_TEXTURE_GROUP, cand)):
+            return Core.subfile(0x7ab50e44, LOT_TEXTURE_GROUP, cand, FSHSubfile).get_as_texture()
+    return null
+
+# Exact heightmap value (world units) at a tile CORNER (grid vertex), unlike
+# _height_at which samples per-tile.
+func _corner_height(x : int, z : int) -> float:
+    var iz = clamp(z, 0, self.height_map.size() - 1)
+    var ix = clamp(x, 0, self.height_map[iz].size() - 1)
+    return self.height_map[iz][ix] / TILE_SIZE
 
 # Reads the city's Building occupant subfile and renders each placed building:
 # occupant record -> building exemplar -> RKT -> S3D model (cached per variant),
@@ -428,20 +541,55 @@ func load_buildings():
     current_s3d_rot = posmod(ROT_SIGN * (2 - cam.rotated), 4)
     current_rot_comp = (cam.rotated - 2) * PI / 2.0
 
+    _place_occupants(bsub.records, "buildings")
+    load_props()
+
+# Reads the city's Prop occupant subfile (cars, benches, lot trees, AC units...)
+# and renders it through the same exemplar -> RKT -> S3D pipeline as buildings.
+func load_props():
+    var pindex = savefile.indices_by_type.get(0x2977aa47, [])
+    if pindex.is_empty():
+        Log.info("City has no prop subfile")
+        return
+    var idx = pindex[0]
+    var psub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, PropSubfile)
+    Log.info("Prop subfile: %d records" % psub.records.size())
+    _place_occupants(psub.records, "props")
+    load_flora()
+
+# Reads the city's Flora occupant subfile (god/mayor-mode trees; lot trees are
+# props) and renders it through the same pipeline.
+func load_flora():
+    var findex = savefile.indices_by_type.get(0xa9c05c85, [])
+    if findex.is_empty():
+        Log.info("City has no flora subfile")
+        return
+    var idx = findex[0]
+    var fsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, FloraSubfile)
+    Log.info("Flora subfile: %d records" % fsub.records.size())
+    _place_occupants(fsub.records, "flora")
+
+# Shared placement loop for occupant records (buildings, props, flora). Records
+# need exemplar_tgi, pos_x, pos_z and orientation. The occupant's own world
+# orientation is folded into which S3D rotation variant is displayed (rotating
+# the impostor mesh itself would break the fixed-camera illusion).
+func _place_occupants(recs : Array, what : String):
     var placed = 0
     var no_model = 0
-    for rec in bsub.records:
+    for rec in recs:
         var ref = _model_ref_for_exemplar(rec.exemplar_tgi)
         if ref == null:
             no_model += 1
             continue
-        var model = _resolve_model(ref, current_s3d_zoom, current_s3d_rot)
+        var vrot = posmod(current_s3d_rot + ROT_SIGN * rec.orientation, 4)
+        var model = _resolve_model(ref, current_s3d_zoom, vrot)
         if model == null:
             no_model += 1
             continue
         var mi = MeshInstance3D.new()
         mi.mesh = model["mesh"]
         mi.set_meta("model_ref", ref)
+        mi.set_meta("orientation", rec.orientation)
         if ref["prop_key"] == RKT1_PROP:
             mi.rotation.y = current_rot_comp
         var x = rec.pos_x / TILE_SIZE
@@ -449,7 +597,7 @@ func load_buildings():
         mi.position = Vector3(x, _height_at(x, z), z)
         building_root.add_child(mi)
         placed += 1
-    Log.info("Placed %d buildings (%d without a resolvable model)" % [placed, no_model])
+    Log.info("Placed %d %s (%d without a resolvable model)" % [placed, what, no_model])
 
 # SC4 building models are referenced via ResourceKeyType1 (RKT1, exemplar property
 # 0x27812821): the stored instance id is a BASE, and the real S3D models fan out as
@@ -499,7 +647,9 @@ func _zoom_candidates(target_zoom : int) -> Array:
 # building it on first use. Returns null if no zoom candidate is buildable.
 func _resolve_model(ref : Dictionary, s3d_zoom : int, rot : int) -> Variant:
     var tgi : Array = ref["tgi"]
-    var zooms = _zoom_candidates(s3d_zoom) if ref["prop_key"] == RKT1_PROP else [null]
+    # Try the zoom x rotation fanout first (RKT1/RKT4 store base iids), then the
+    # literal iid as a fallback (RKT0-style single-model refs).
+    var zooms = _zoom_candidates(s3d_zoom) + [null]
     for z in zooms:
         var iid = tgi[2] if z == null else tgi[2] + (z << 8) + (rot << 4)
         var key = SubfileTGI.TGI2str(tgi[0], tgi[1], iid)
@@ -545,9 +695,8 @@ func set_building_view(cam_zoom : int, rotated : int, free_rot : int = -1):
     current_rot_comp = comp
     for mi in building_root.get_children():
         var ref = mi.get_meta("model_ref")
-        if ref["prop_key"] != RKT1_PROP:
-            continue                       # single-variant model, never swaps
-        var model = _resolve_model(ref, zoom, rot)
+        var vrot = posmod(rot + ROT_SIGN * mi.get_meta("orientation", 0), 4)
+        var model = _resolve_model(ref, zoom, vrot)
         if model != null:
             mi.mesh = model["mesh"]        # else keep the previous variant
         mi.rotation.y = comp

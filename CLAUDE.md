@@ -24,6 +24,15 @@ OpenSC4 is an open-source **Godot 4.7 (GDScript)** reimplementation of *SimCity 
   (expect **0 SCRIPT ERRORs**).
 - Boot the app headless: `timeout -k 5 20 godot --path . --headless`
   — should reach the log line `DBPF files loaded` with zero SCRIPT ERRORs.
+- City-load harness (headless): `godot --headless --path . res://tools/HeadlessCity.tscn`
+  `[-- "<region>" "<city name>"]` (default Timbuktu / Big City Tutorial). Loads the DATs +
+  a real save, builds terrain/buildings, sweeps all building view variants; a clean run
+  ends with `SWEEP COMPLETE`.
+- Visual harness (windowed): `godot --path . --resolution 1600x900
+  res://tools/ScreenshotCity.tscn -- <out_dir> ["<region>" "<city name>"]` — same load
+  path, then saves `city_zoom1.png` (whole map) and `city_zoom4.png` (map centre,
+  close-up) to `<out_dir>` and quits; ends with `SCREENSHOTS DONE`. Use it to eyeball
+  placement/rendering changes.
 - Main scene: `BootScreen.tscn`. **There is no test suite.**
 
 ## Architecture
@@ -68,6 +77,14 @@ Everything flows through this singleton.
   key descriptions from `exemplar_types.dict`), `FSHSubfile` (textures), `S3DSubfile`
   (3D models), `LTEXTSubfile` (UTF-16 strings), `ImageSubfile` (PNG), `RULSubfile` (network
   rules), `CURSubfile` (cursors), `INISubfile`.
+- City-save subfile parsers (occupants placed in a city): `BuildingSubfile` (0xA9BD882D),
+  `PropSubfile` (0x2977AA47) and `FloraSubfile` (0xA9C05C85) share one record family
+  (Exemplar TGI marker + LE float bbox/position + orientation); `LotBaseTextureSubfile`
+  (0xC97F987C) gives per-tile lot ground-texture FSH families (resolve at group
+  0x0986135E, instance = family + zoom 0..4); `LotSubfile` (0xC9BD5D4A) is data-only
+  (tile rect, zoning, wealth — SC4 denormalizes lot visuals into the other subfiles).
+  All are rendered/loaded from `City.gd` (`load_buildings/load_props/load_flora/`
+  `load_lot_textures/load_lots`).
 - `GZWin*.gd` (`GZWin`, `GZWinBtn`, `GZWinText`, `GZWinBMP`, `GZWinFlatRect`, `GZWinGen`) —
   Godot `Control` wrappers for SC4's UI primitives.
 - **To add a new SC4 file format:** create a new `extends DBPFSubfile` class in `addons/dbpf/`

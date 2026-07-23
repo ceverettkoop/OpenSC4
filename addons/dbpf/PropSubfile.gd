@@ -1,0 +1,78 @@
+extends DBPFSubfile
+
+# Parses SC4's Prop occupant subfile (type 0x2977AA47) from a city save.
+# Same record family as the Building subfile (see BuildingSubfile.gd): a flat
+# array of length-prefixed records, each embedding the prop's Exemplar TGI and
+# a little-endian float bbox. Layout after the Exemplar-type marker differs
+# slightly from buildings: instance id, instance id repeated, then the bbox
+# immediately (no gap byte), then the orientation byte. Verified against every
+# record of a developed save with tools/dat_dump.py-based offset validation.
+class_name PropSubfile
+
+const EXEMPLAR_TYPE : int = 0x6534284a
+# Offsets relative to the Exemplar-type marker within a record.
+const OFF_GROUP : int = -4       # exemplar group id (LE u32)
+const OFF_INSTANCE : int = 4     # exemplar instance id (LE u32)
+# The bbox is six little-endian float32s: minX, minY, minZ, maxX, maxY, maxZ.
+const OFF_BBOX : int = 12
+const OFF_ORIENTATION : int = 36 # 0..3, quarter-turns
+
+class PropRecord:
+    var exemplar_tgi : Array      # [type, group, instance]
+    var pos_x : float             # world metres (X), centre of the bbox footprint
+    var pos_z : float             # world metres (Z), centre of the bbox footprint
+    var altitude : float          # metres, bbox minY (terrain is preferred for placement)
+    var orientation : int         # 0..3, quarter-turns
+
+var records : Array = []
+
+func _init(index):
+    super._init(index)
+
+func load(file, dbdf=null):
+    super.load(file, dbdf)        # raw_data is now decompressed
+    var n = raw_data.size()
+    var buf = StreamPeerBuffer.new()
+    buf.data_array = raw_data
+    var pos = 0
+    while pos + 4 <= n:
+        var size = _u32(pos)
+        if size < 4 or pos + size > n:
+            break
+        var marker = _find_marker(pos, pos + size)
+        if marker >= 0 and marker + OFF_ORIENTATION < pos + size:
+            var rec = PropRecord.new()
+            rec.exemplar_tgi = [
+                EXEMPLAR_TYPE,
+                _u32(marker + OFF_GROUP),
+                _u32(marker + OFF_INSTANCE),
+            ]
+            buf.seek(marker + OFF_BBOX)
+            var min_x = buf.get_float()
+            rec.altitude = buf.get_float()  # minY: Y is up
+            var min_z = buf.get_float()
+            rec.pos_x = (min_x + buf.get_float()) / 2.0
+            buf.get_float()                 # maxY unused
+            rec.pos_z = (min_z + buf.get_float()) / 2.0
+            rec.orientation = raw_data[marker + OFF_ORIENTATION]
+            records.append(rec)
+        pos += size
+    return OK
+
+# Little-endian u32 read straight from raw_data.
+func _u32(o : int) -> int:
+    return raw_data[o] | (raw_data[o + 1] << 8) | (raw_data[o + 2] << 16) | (raw_data[o + 3] << 24)
+
+# First offset in [from, to) whose 4 LE bytes equal the Exemplar type id, or -1.
+func _find_marker(from : int, to : int) -> int:
+    var b0 = EXEMPLAR_TYPE & 0xff
+    var b1 = (EXEMPLAR_TYPE >> 8) & 0xff
+    var b2 = (EXEMPLAR_TYPE >> 16) & 0xff
+    var b3 = (EXEMPLAR_TYPE >> 24) & 0xff
+    var o = from
+    var limit = to - 4
+    while o <= limit:
+        if raw_data[o] == b0 and raw_data[o + 1] == b1 and raw_data[o + 2] == b2 and raw_data[o + 3] == b3:
+            return o
+        o += 1
+    return -1
