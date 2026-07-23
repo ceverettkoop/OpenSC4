@@ -16,6 +16,14 @@ var orbit_focus := Vector3.ZERO
 var orbit_yaw := 0.0
 var orbit_pitch := deg_to_rad(35.0)
 var orbit_dist := 60.0
+# Iso camera azimuth captured on entering free mode; reference for picking the
+# nearest S3D rotation variant while orbiting.
+var iso_cam_azimuth := 0.0
+var last_free_rot := -1
+# Camera3D's local transform under the rig, captured on entering free mode.
+# _apply_free moves the camera node itself, so this must be restored on exit or
+# the iso view maths sits on top of a displaced camera.
+var iso_cam_local := Transform3D.IDENTITY
 
 func _ready():
     velocity = Vector3(0, 0, 0)
@@ -36,38 +44,49 @@ func _input(event):
     if event is InputEventMouseButton:
         if event.is_pressed():
             if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-                self.zoom += 1
-                if self.zoom > 6:
-                    self.zoom = 6
-                $Camera3D.size = zoom_list[self.zoom-1]
-                _set_view()
+                _zoom_step(1)
             elif event.button_index == MOUSE_BUTTON_RIGHT:
                 if len(hold_r) == 0:
                     hold_r = [event.position.x, event.position.y]
             elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-                self.zoom -= 1
-                if self.zoom < 1:
-                    self.zoom = 1
-                $Camera3D.size = zoom_list[self.zoom-1]
-                _set_view()
+                _zoom_step(-1)
         if not event.is_pressed():
             if event.button_index == MOUSE_BUTTON_RIGHT:
                 hold_r = []
-    elif event is InputEventKey:
-        if event.pressed and event.keycode == KEY_PAGEUP:
-            rotated = (rotated + 1)%4
-            var rot = round(((rotated*(PI/2)) + get_node("../Node3D").rotation.y) / (PI/2))*(PI/2)
-            var rot_trans = get_node("../Node3D").transform.rotated(Vector3(0,1,0), rot)
-            get_node("../Node3D").set_transform(rot_trans)
-            var old = self.transform.origin
-            self.transform.origin = Vector3(-old.z, old.y, old.x)
-        elif event.pressed and event.keycode == KEY_PAGEDOWN:
-            rotated = ((rotated-1)+4)%4
-            var rot = round(((rotated*(PI/2)) + get_node("../Node3D").rotation.y) / (PI/2))*(PI/2)
-            var rot_trans = get_node("../Node3D").transform.rotated(Vector3(0,1,0), rot)
-            get_node("../Node3D").set_transform(rot_trans)
-            var old = self.transform.origin
-            self.transform.origin = Vector3(old.z, old.y, -old.x)
+    elif event is InputEventKey and event.pressed and not event.echo:
+        match event.keycode:
+            KEY_PAGEUP, KEY_BRACKETRIGHT:
+                _rotate_step(1)
+            KEY_PAGEDOWN, KEY_BRACKETLEFT:
+                _rotate_step(-1)
+            KEY_EQUAL, KEY_KP_ADD:
+                _zoom_step(1)
+            KEY_MINUS, KEY_KP_SUBTRACT:
+                _zoom_step(-1)
+
+func _zoom_step(dir : int):
+    self.zoom = clamp(self.zoom + dir, 1, 6)
+    $Camera3D.size = zoom_list[self.zoom - 1]
+    _set_view()
+    _notify_view()
+
+func _rotate_step(dir : int):
+    rotated = posmod(rotated + dir, 4)
+    var rot = round(((rotated*(PI/2)) + get_node("../Node3D").rotation.y) / (PI/2))*(PI/2)
+    var rot_trans = get_node("../Node3D").transform.rotated(Vector3(0,1,0), rot)
+    get_node("../Node3D").set_transform(rot_trans)
+    var old = self.transform.origin
+    if dir > 0:
+        self.transform.origin = Vector3(-old.z, old.y, old.x)
+    else:
+        self.transform.origin = Vector3(old.z, old.y, -old.x)
+    _notify_view()
+
+# Tells the City which S3D building variant matches the current view.
+func _notify_view(free_rot : int = -1):
+    var p = get_parent()
+    if p.has_method("set_building_view"):
+        p.set_building_view(zoom, rotated, free_rot)
 # Routes input while the free-orbit camera is active: RMB orbits, MMB pans,
 # wheel dollies. Everything is relative-motion based so it needs no drag state.
 func _free_input(event):
@@ -87,6 +106,20 @@ func _free_input(event):
         elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
             orbit_dist = min(orbit_dist * 1.1, 3000.0)
             _apply_free()
+    elif event is InputEventKey and event.pressed and not event.echo:
+        match event.keycode:
+            KEY_EQUAL, KEY_KP_ADD:
+                orbit_dist = max(orbit_dist * 0.9, 1.0)
+                _apply_free()
+            KEY_MINUS, KEY_KP_SUBTRACT:
+                orbit_dist = min(orbit_dist * 1.1, 3000.0)
+                _apply_free()
+            KEY_BRACKETRIGHT:
+                orbit_yaw -= PI / 2.0
+                _apply_free()
+            KEY_BRACKETLEFT:
+                orbit_yaw += PI / 2.0
+                _apply_free()
 
 # Places the perspective camera on a sphere around orbit_focus.
 func _apply_free():
@@ -97,6 +130,15 @@ func _apply_free():
     var cam := $Camera3D
     cam.global_position = orbit_focus + offset
     cam.look_at(orbit_focus, Vector3.UP)
+    # Swap buildings to the S3D rotation variant nearest the orbit azimuth.
+    var f = -cam.global_transform.basis.z
+    var A = atan2(f.x, f.z)
+    var w = (2 - rotated) * PI / 2.0
+    var theta_v = wrapf(w - (A - iso_cam_azimuth), -PI, PI)
+    var r = posmod(int(round(theta_v / (PI / 2.0))), 4)
+    if r != last_free_rot:
+        last_free_rot = r
+        _notify_view(r)
 
 func _toggle_free():
     free_mode = not free_mode
@@ -105,6 +147,11 @@ func _toggle_free():
         # Start focused roughly where the iso view was centred (rig origin sits on
         # the water plane under the screen centre).
         orbit_focus = Vector3(self.global_transform.origin.x, get_parent().WATER_HEIGHT, self.global_transform.origin.z)
+        # Reference azimuth for variant selection, captured while still in iso view.
+        var f = -cam.global_transform.basis.z
+        iso_cam_azimuth = atan2(f.x, f.z)
+        last_free_rot = -1
+        iso_cam_local = cam.transform
         cam.projection = Camera3D.PROJECTION_PERSPECTIVE
         cam.fov = 55.0
         cam.near = 0.05
@@ -114,8 +161,12 @@ func _toggle_free():
     else:
         cam.projection = Camera3D.PROJECTION_ORTHOGONAL
         cam.near = -200.0
+        cam.far = 4000.0
         cam.size = zoom_list[zoom - 1]
+        cam.transform = iso_cam_local
         _set_view()
+        last_free_rot = -1
+        _notify_view()   # restore the iso variant
         Log.info("Free camera OFF")
 
 func _physics_process(_delta):

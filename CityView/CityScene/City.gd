@@ -406,7 +406,7 @@ func create_terrain():
         load_buildings()
 
 # Reads the city's Building occupant subfile and renders each placed building:
-# occupant record -> building exemplar -> RKT -> S3D model (cached per model),
+# occupant record -> building exemplar -> RKT -> S3D model (cached per variant),
 # instanced at the record's world position on the terrain.
 func load_buildings():
     var bindex = savefile.indices_by_type.get(0xa9bd882d, [])
@@ -417,102 +417,140 @@ func load_buildings():
     var bsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, BuildingSubfile)
     Log.info("Building subfile: %d records" % bsub.records.size())
 
-    var root = Node3D.new()
-    root.name = "Buildings"
-    $Node3D.add_child(root)
-    var base_mat : ShaderMaterial = $Node3D/TestS3D.get_material_override()
+    building_root = Node3D.new()
+    building_root.name = "Buildings"
+    $Node3D.add_child(building_root)
+    opaque_mat_base = $Node3D/TestS3D.get_material_override()
+    blend_mat_base = $Node3D/S3DBlendBase.get_material_override()
 
-    var model_cache = {}      # S3D TGI string -> {"mesh":, "material":} (or null)
+    var cam = $CameraHandler
+    current_s3d_zoom = S3D_ZOOM_FOR_CAMERA[cam.zoom - 1]
+    current_s3d_rot = posmod(ROT_SIGN * (2 - cam.rotated), 4)
+    current_rot_comp = (cam.rotated - 2) * PI / 2.0
+
     var placed = 0
     var no_model = 0
     for rec in bsub.records:
-        var model = _model_for_exemplar(rec.exemplar_tgi, model_cache, base_mat)
+        var ref = _model_ref_for_exemplar(rec.exemplar_tgi)
+        if ref == null:
+            no_model += 1
+            continue
+        var model = _resolve_model(ref, current_s3d_zoom, current_s3d_rot)
         if model == null:
             no_model += 1
             continue
         var mi = MeshInstance3D.new()
         mi.mesh = model["mesh"]
-        mi.material_override = model["material"]
+        mi.set_meta("model_ref", ref)
+        if ref["prop_key"] == RKT1_PROP:
+            mi.rotation.y = current_rot_comp
         var x = rec.pos_x / TILE_SIZE
         var z = rec.pos_z / TILE_SIZE
         mi.position = Vector3(x, _height_at(x, z), z)
-        root.add_child(mi)
+        building_root.add_child(mi)
         placed += 1
     Log.info("Placed %d buildings (%d without a resolvable model)" % [placed, no_model])
 
 # SC4 building models are referenced via ResourceKeyType1 (RKT1, exemplar property
 # 0x27812821): the stored instance id is a BASE, and the real S3D models fan out as
 # 5 zoom levels x 4 rotations, encoded  iid = base + (zoom << 8) + (rotation << 4).
-# The base itself is zoom 0 (coarsest LOD), which is why buildings rendered blurry.
+# Each zoom x rotation S3D is a 2.5D impostor authored for one fixed isometric
+# camera, so exactly ONE variant -- matching the current view -- is rendered, and
+# swapped live when the camera zooms or rotates (see set_building_view).
 const RKT1_PROP : int = 0x27812821
-const LOD_ZOOM : int = 4        # highest detail; modern HW renders full LOD at all camera distances
-const LOD_ROTATION : int = 0
+# Handedness of the baked variant rotations vs Godot's yaw. The one empirical
+# unknown of the variant math: flip to -1 if rotating the iso view melts buildings.
+const ROT_SIGN : int = -1
+# Camera zoom 1..6 (CameraAnchor3D.zoom) -> S3D szoom LOD 0..4.
+const S3D_ZOOM_FOR_CAMERA = [0, 1, 2, 3, 4, 4]
 
-# Ordered list of candidate model TGIs for an exemplar's S3D reference, highest
-# LOD first. For RKT1 refs that's zoom 4 -> 0 (rotation 0); a non-RKT1 / explicit
-# ref is its single self. Not every zoom's S3D or its textures are present in the
-# loaded DATs, so the caller tries these in order and takes the first that builds.
-func _lod_candidates(ref : Dictionary) -> Array:
-    var tgi : Array = ref["tgi"]
-    if ref["prop_key"] != RKT1_PROP:
-        return [tgi]
-    var out = []
-    for zoom in range(LOD_ZOOM, -1, -1):
-        out.append([tgi[0], tgi[1], tgi[2] + (zoom << 8) + (LOD_ROTATION << 4)])
-    return out
+var building_root : Node3D
+# Concrete variant TGI string -> {"mesh": ArrayMesh} or null for known-unbuildable.
+var model_cache = {}
+var opaque_mat_base : ShaderMaterial
+var blend_mat_base : ShaderMaterial
+var current_s3d_zoom : int = 0
+var current_s3d_rot : int = 0
+var current_rot_comp : float = 0.0
 
-# Resolves a building exemplar to a cached model, loading + building it on first
-# use. Falls back down the LOD list when the highest zoom's S3D or textures are
-# missing from the loaded DATs.
-func _model_for_exemplar(exemplar_tgi : Array, cache : Dictionary, base_mat : ShaderMaterial):
+# The first model reference of a building exemplar, or null if unresolvable.
+# (-> Variant is load-bearing: without it the analyzer infers the mixed
+# Dictionary/null returns as hard null and rejects subscripts on the result.)
+func _model_ref_for_exemplar(exemplar_tgi : Array) -> Variant:
     if not Core.subfile_indices.has(SubfileTGI.TGI2str(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2])):
         return null
     var exemplar = Core.subfile(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2], ExemplarSubfile)
     var refs = exemplar.get_all_model_refs()
     if refs.is_empty():
         return null
-    var ref = refs[0]
-    var is_rkt1 = (ref["prop_key"] == RKT1_PROP)
-    for model_tgi in _lod_candidates(ref):
-        var key = SubfileTGI.TGI2str(model_tgi[0], model_tgi[1], model_tgi[2])
-        if cache.has(key):
-            if cache[key] != null:
-                return cache[key]
-            continue                       # known-unbuildable at this LOD, try next
+    return refs[0]
+
+# Zoom fallback order when the target zoom's S3D or its FSH textures are missing
+# from the loaded DATs: coarser LODs first, finer ones as a last resort.
+func _zoom_candidates(target_zoom : int) -> Array:
+    var out = []
+    for z in range(target_zoom, -1, -1):
+        out.append(z)
+    for z in range(target_zoom + 1, 5):
+        out.append(z)
+    return out
+
+# Resolves a model reference to a cached {"mesh":} for the requested view,
+# building it on first use. Returns null if no zoom candidate is buildable.
+func _resolve_model(ref : Dictionary, s3d_zoom : int, rot : int) -> Variant:
+    var tgi : Array = ref["tgi"]
+    var zooms = _zoom_candidates(s3d_zoom) if ref["prop_key"] == RKT1_PROP else [null]
+    for z in zooms:
+        var iid = tgi[2] if z == null else tgi[2] + (z << 8) + (rot << 4)
+        var key = SubfileTGI.TGI2str(tgi[0], tgi[1], iid)
+        if model_cache.has(key):
+            if model_cache[key] != null:
+                return model_cache[key]
+            continue                       # known-unbuildable at this zoom, try next
         if not Core.subfile_indices.has(key):
-            cache[key] = null
+            model_cache[key] = null
             continue
-        var built = _build_model(model_tgi, is_rkt1)
+        var s3d = Core.subfile(tgi[0], tgi[1], iid, S3DSubfile)
+        var built = s3d.build_model(opaque_mat_base, blend_mat_base)
         if built.is_empty():
-            cache[key] = null
+            model_cache[key] = null
             continue
-        var mat = base_mat.duplicate()
-        mat.set_shader_parameter("s3dtexture", built["texture"])
-        var model = {"mesh": built["mesh"], "material": mat}
-        cache[key] = model
-        return model
+        model_cache[key] = built
+        return built
     return null
 
-# Builds the renderable mesh+texture for a rotation-0 S3D TGI. RKT1 models are 2.5D
-# per rotation, so this composites rotation 0 (full: walls + roof) with rotation 2
-# (walls only, turned 180 degrees) into a four-walled mesh. Non-RKT1 / explicit
-# models have no rotation family and use their single variant as-is. Returns {} if
-# the model's textures aren't in the loaded DATs (caller falls back to a lower LOD).
-func _build_model(rot0_tgi : Array, is_rkt1 : bool) -> Dictionary:
-    var s3d0 = Core.subfile(rot0_tgi[0], rot0_tgi[1], rot0_tgi[2], S3DSubfile)
-    # Rotation 0 provides the full model (walls + roof). The other three rotations,
-    # turned back to canonical (+rot*90 deg) and reduced to their walls, fill in the
-    # remaining sides and corners without their roofs z-fighting rotation 0's.
-    var variants = [{"s3d": s3d0, "angle": 0.0, "walls_only": false, "scale": 1.0}]
-    if is_rkt1:
-        # rotation -> [canonicalizing angle, XZ inset]. The inset nests each variant
-        # a hair inside the last so overlapping walls resolve by depth, not z-fight.
-        for spec in [[1, PI / 2.0, 0.99], [2, PI, 0.98], [3, -PI / 2.0, 0.97]]:
-            var iid = rot0_tgi[2] + (spec[0] << 4)
-            if Core.subfile_indices.has(SubfileTGI.TGI2str(rot0_tgi[0], rot0_tgi[1], iid)):
-                var s3d = Core.subfile(rot0_tgi[0], rot0_tgi[1], iid, S3DSubfile)
-                variants.append({"s3d": s3d, "angle": spec[1], "walls_only": true, "scale": spec[2]})
-    return S3DSubfile.build_composite(variants)
+# Swaps every building to the S3D variant matching the current view. Called by
+# CameraAnchor3D on zoom/rotation changes. `free_rot` >= 0 is the free-orbit
+# camera's nearest rotation index (computed with sign +1; ROT_SIGN applied here).
+func set_building_view(cam_zoom : int, rotated : int, free_rot : int = -1):
+    if building_root == null:
+        return
+    var zoom = S3D_ZOOM_FOR_CAMERA[cam_zoom - 1]
+    var rot : int
+    var comp : float
+    if free_rot >= 0:
+        rot = posmod(ROT_SIGN * free_rot, 4)
+        # Cancel the variant's baked rotation so the building stays world-oriented
+        # while the free camera orbits it, swapping shells at 45-degree boundaries.
+        comp = -ROT_SIGN * rot * PI / 2.0
+    else:
+        rot = posmod(ROT_SIGN * (2 - rotated), 4)
+        # Counter-rotate the world rotation so the impostor always faces the fixed
+        # iso camera in its authored orientation.
+        comp = (rotated - 2) * PI / 2.0
+    if zoom == current_s3d_zoom and rot == current_s3d_rot and comp == current_rot_comp:
+        return
+    current_s3d_zoom = zoom
+    current_s3d_rot = rot
+    current_rot_comp = comp
+    for mi in building_root.get_children():
+        var ref = mi.get_meta("model_ref")
+        if ref["prop_key"] != RKT1_PROP:
+            continue                       # single-variant model, never swaps
+        var model = _resolve_model(ref, zoom, rot)
+        if model != null:
+            mi.mesh = model["mesh"]        # else keep the previous variant
+        mi.rotation.y = comp
 
 # Terrain altitude (world units) at tile coordinate (x, z), matching create_terrain's
 # heightmap[z][x] convention; clamps to the map edges.

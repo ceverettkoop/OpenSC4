@@ -1,4 +1,4 @@
-[gd_scene load_steps=24 format=3 uid="uid://b9m4t6k2p5v8h"]
+[gd_scene load_steps=26 format=3 uid="uid://b9m4t6k2p5v8h"]
 
 [ext_resource type="Script" uid="uid://dk7xbtlelp2m4" path="res://CityView/CityScene/City.gd" id="1"]
 [ext_resource type="Script" uid="uid://vwy3lg2w1bs0" path="res://CityView/CityScene/CameraAnchor3D.gd" id="2"]
@@ -318,6 +318,28 @@ void fragment(){
 shader = SubResource("16")
 shader_parameter/direction = Vector2(40, 20)
 
+[sub_resource type="Shader" id="30"]
+code = "shader_type spatial;
+// Blend-flagged S3D groups (baked ground shadows and other translucent quads)
+// must alpha-blend: the scissor threshold of the opaque material would render
+// their semi-transparent black texels as solid black shapes. depth_draw_never
+// keeps the flat shadow quads from occluding geometry behind them.
+render_mode unshaded, cull_disabled, depth_draw_never;
+
+uniform sampler2DArray s3dtexture : source_color;
+
+void fragment(){
+	// COLOR.r carries the S3D group's texture-array layer (see S3DSubfile.build_model).
+	float layer = round(COLOR.r * 255.0);
+	vec4 tex = texture(s3dtexture, vec3(UV, layer));
+	ALBEDO = tex.rgb;
+	ALPHA = tex.a;
+}
+	"
+
+[sub_resource type="ShaderMaterial" id="31"]
+shader = SubResource("30")
+
 [sub_resource type="Shader" id="7"]
 code = "shader_type spatial;
 render_mode depth_draw_always;
@@ -451,6 +473,9 @@ script = ExtResource("3")
 [node name="TestS3D" type="MeshInstance3D" parent="Node3D"]
 material_override = SubResource("17")
 script = ExtResource("5")
+
+[node name="S3DBlendBase" type="MeshInstance3D" parent="Node3D"]
+material_override = SubResource("31")
 
 [node name="Border" type="MeshInstance3D" parent="Node3D"]
 material_override = SubResource("8")

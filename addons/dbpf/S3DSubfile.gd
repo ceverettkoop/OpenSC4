@@ -117,15 +117,15 @@ func load(file, dbdf=null):
     for grpind in range(m_grpcnt):
         var settings = raw_data[ind]
         ind += 1
-        if settings && 0x01:
+        if settings & 0x01:
             self.groups[grpind].alphatest = true
-        if settings && 0x02:
+        if settings & 0x02:
             self.groups[grpind].depthtest = true
-        if settings && 0x08:
+        if settings & 0x08:
             self.groups[grpind].backfacecull = true
-        if settings && 0x10:
+        if settings & 0x10:
             self.groups[grpind].framebuffblnd = true
-        if settings && 0x20:
+        if settings & 0x20:
             self.groups[grpind].texturing = true
         # 3 Bytes ?
         ind += 3
@@ -164,201 +164,86 @@ func load(file, dbdf=null):
         "-PROP block- TODO"
         "-REGP block- TODO"
         
-func add_to_mesh(mesh: MeshInstance3D, location: Vector3):
-    """this is temporary to test if it loads and how its size is compared to regulater terrain"""
-    var vertices = PackedVector3Array([])
-    var UVs = PackedVector2Array([])
-    var images = []
-    for group in self.groups:
-        var loc_vert = PackedVector3Array([])
-        var loc_UV = PackedVector2Array([])
-        for vertind in range(group.vertices.size()-1, -1, -1):
-            loc_vert.append(location + group.vertices[vertind])
-            loc_UV.append(group.UVs[vertind])
-        vertices.append_array(loc_vert)
-        UVs.append_array(loc_UV)
-        var image = get_texture_from_mat_id(group.mat_id)
-        images.append(image)
-    var fmt = self.formats[0]
-    var prepared : Array[Image] = []
-    for img in images:
-        var im = img
-        if im.get_format() != fmt:
-            im = im.duplicate()
-            im.convert(fmt)
-        if im.get_width() != self.max_text_width or im.get_height() != self.max_text_height:
-            if im == img:
-                im = img.duplicate()
-            im.resize(self.max_text_width, self.max_text_height)
-        prepared.append(im)
-    var textarr = Texture2DArray.new()
-    textarr.create_from_images(prepared)
-
-    var array_mesh : ArrayMesh = mesh.mesh
-    var arrays : Array = []
-    arrays.resize(ArrayMesh.ARRAY_MAX)
-    arrays[ArrayMesh.ARRAY_VERTEX] = vertices
-    arrays[ArrayMesh.ARRAY_TEX_UV] = UVs 
-    array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-    mesh.mesh = array_mesh
-    var mat = mesh.get_material_override()
-    mat.set_shader_parameter("s3dtexture", textarr)
-    mesh.set_material_override(mat)
-    
 # Builds a reusable, origin-centred model: an ArrayMesh in the S3D's own local
-# space plus a Texture2DArray of its group textures. Unlike add_to_mesh (which
-# bakes a single world location and mutates a passed node), this returns the
-# resources so one model can be instanced many times across a city.
-# Returns {"mesh": ArrayMesh, "texture": Texture2DArray} or null if empty.
-func build_instance():
+# space, materials baked in per surface so one model can be instanced many times
+# across a city with a bare `mi.mesh = ...` assignment.
+# Groups are split into two surfaces: opaque ones (alpha-scissor material) and
+# blend-flagged ones -- baked ground shadows and other translucent quads -- which
+# must alpha-blend; scissoring them renders semi-transparent black shadow texels
+# as solid black shapes. Each surface gets its own Texture2DArray (one layer per
+# group, layer index stashed in vertex COLOR.r) and a duplicate of the matching
+# base material. Returns {"mesh": ArrayMesh} or {} if any group's FSH texture is
+# missing from the loaded DATs (caller falls back to a different zoom LOD).
+func build_model(opaque_mat_base : ShaderMaterial, blend_mat_base : ShaderMaterial) -> Dictionary:
     if self.groups.is_empty():
-        return null
-    var images = []
-    for group in self.groups:
-        var img = get_texture_from_mat_id(group.mat_id)
-        if img == null:
-            # A group's texture isn't in the loaded DATs (happens for some zoom
-            # LODs). Bail so the caller can fall back to a different LOD.
-            return null
-        images.append(img)
-    if images.is_empty() or self.formats.is_empty():
-        return null
-    # Decompress to RGBA8. The FSH textures are DXT1 (BC1), whose 1-bit
-    # punch-through alpha marks the sprite's transparent background. Godot uploads
-    # FORMAT_DXT1 to the GPU as an OPAQUE BC1 format, so that alpha is ignored and
-    # the transparent (pure-black) texels render as solid black boxes. Decompressing
-    # to RGBA8 here preserves the alpha the GPU sampler needs. Every Texture2DArray
-    # layer must also share one size.
-    var w = self.max_text_width
-    var h = self.max_text_height
-    var prepared : Array[Image] = []
-    for img in images:
-        var im = img.duplicate()
-        if im.is_compressed():
-            im.decompress()
-        im.convert(Image.FORMAT_RGBA8)
-        if im.get_width() != w or im.get_height() != h:
-            im.resize(w, h)
-        prepared.append(im)
-    var textarr = Texture2DArray.new()
-    textarr.create_from_images(prepared)
-
-    # Each group's texture is a separate Texture2DArray layer (same order as
-    # `prepared` above). Stash the group's layer index in the vertex COLOR so the
-    # shader can sample the right layer instead of always layer 0 -- otherwise
-    # secondary groups (e.g. a building's semi-transparent shadow quad) render
-    # with the wrong opaque texture and show up as a black box.
-    var vertices = PackedVector3Array([])
-    var UVs = PackedVector2Array([])
-    var layers = PackedColorArray([])
-    var layer := 0
-    for group in self.groups:
-        var lf : float = float(layer) / 255.0
-        for vertind in range(group.vertices.size() - 1, -1, -1):
-            vertices.append(group.vertices[vertind])
-            UVs.append(group.UVs[vertind])
-            layers.append(Color(lf, 0.0, 0.0, 1.0))
-        layer += 1
-    var array_mesh : ArrayMesh = ArrayMesh.new()
-    var arrays : Array = []
-    arrays.resize(ArrayMesh.ARRAY_MAX)
-    arrays[ArrayMesh.ARRAY_VERTEX] = vertices
-    arrays[ArrayMesh.ARRAY_TEX_UV] = UVs
-    arrays[ArrayMesh.ARRAY_COLOR] = layers
-    array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-    return {"mesh": array_mesh, "texture": textarr}
-
-# Composites several rotation variants of a model into one full-3D mesh. SC4
-# rotation models are 2.5D -- each only models the two walls + roof facing its own
-# fixed isometric camera, so a single variant is hollow from behind. The variants
-# are the same building pre-rotated by rot*90 about the vertical axis at the origin,
-# so rotating each back by its own angle re-aligns them; merging then fills in all
-# four walls. `variants` is a list of {"s3d": S3DSubfile, "angle": float (radians),
-# "walls_only": bool}. A walls_only variant contributes only near-vertical faces, so
-# a secondary variant fills in the missing walls without its roof z-fighting the
-# primary's. Returns {"mesh":, "texture":} or {} if any texture is missing.
-static func build_composite(variants : Array) -> Dictionary:
-    # Gather every contributing group's source image + geometry, tagged with the
-    # Texture2DArray layer it will occupy.
-    var groups_out = []   # {layer, verts, uvs, angle, walls_only, scale}
-    var images = []
-    for vrec in variants:
-        for group in vrec["s3d"].groups:
-            var fsh = Core.subfile(0x7ab50e44, 0x1ABE787D, group.mat_id, FSHSubfile)
-            if fsh == null:
-                return {}   # missing texture -> let the caller fall back to a lower LOD
-            images.append(fsh.img)
-            groups_out.append({
-                "layer": images.size() - 1,
-                "verts": group.vertices,
-                "uvs": group.UVs,
-                "angle": vrec["angle"],
-                "walls_only": vrec["walls_only"],
-                "scale": vrec.get("scale", 1.0),
-            })
-    if images.is_empty():
         return {}
-    # Every Texture2DArray layer must share one size + format (RGBA8, per build_instance).
-    var w = 0
-    var h = 0
-    for im0 in images:
-        w = max(w, im0.get_width())
-        h = max(h, im0.get_height())
-    var prepared : Array[Image] = []
-    for im0 in images:
-        var im = im0.duplicate()
-        if im.is_compressed():
-            im.decompress()
-        im.convert(Image.FORMAT_RGBA8)
-        if im.get_width() != w or im.get_height() != h:
-            im.resize(w, h)
-        prepared.append(im)
-    var textarr = Texture2DArray.new()
-    textarr.create_from_images(prepared)
+    var buckets = {"opaque": [], "blend": []}   # [{group, img}]
+    for group in self.groups:
+        # Missing textures are expected for some zoom LODs (the caller falls back
+        # to another zoom), so probe the index rather than let Core.subfile log
+        # an error for every miss.
+        if not Core.subfile_indices.has(SubfileTGI.TGI2str(0x7ab50e44, 0x1ABE787D, group.mat_id)):
+            return {}
+        var fsh = Core.subfile(0x7ab50e44, 0x1ABE787D, group.mat_id, FSHSubfile)
+        if fsh == null:
+            return {}
+        var is_blend = group.framebuffblnd or group.group_name.to_lower().contains("shadow")
+        if is_blend:
+            Log.debug("S3D %08x blend group '%s': srcblend=%d destblend=%d" % [
+                self.index.instance_id, group.group_name, group.srcblend, group.destblend])
+        buckets["blend" if is_blend else "opaque"].append({"group": group, "img": fsh.img})
 
-    var vertices = PackedVector3Array([])
-    var UVs = PackedVector2Array([])
-    var layers = PackedColorArray([])
-    for g in groups_out:
-        var basis := Basis(Vector3.UP, g["angle"])
-        var sc : float = g["scale"]
-        var lf : float = float(g["layer"]) / 255.0
-        var gv = g["verts"]
-        var gu = g["uvs"]
-        # Re-align to the canonical orientation (keeping build_instance's reversed
-        # winding), then inset in XZ by `scale`: nesting successive variants slightly
-        # inward makes overlapping walls resolve by depth (rotation 0 wins) instead
-        # of z-fighting, while fill-in walls still show where rotation 0 is absent.
-        var rv = []
-        var ru = []
-        for k in range(gv.size() - 1, -1, -1):
-            var p : Vector3 = basis * gv[k]
-            p.x *= sc
-            p.z *= sc
-            rv.append(p)
-            ru.append(gu[k])
-        var t = 0
-        while t + 2 < rv.size():
-            if g["walls_only"]:
-                var n : Vector3 = (rv[t + 1] - rv[t]).cross(rv[t + 2] - rv[t]).normalized()
-                if abs(n.y) > 0.6:   # roof/floor/ground -- skip; keep only walls
-                    t += 3
-                    continue
-            for j in range(3):
-                vertices.append(rv[t + j])
-                UVs.append(ru[t + j])
+    var array_mesh : ArrayMesh = ArrayMesh.new()
+    var surface := 0
+    for bucket_name in ["opaque", "blend"]:
+        var entries : Array = buckets[bucket_name]
+        if entries.is_empty():
+            continue
+        # Every Texture2DArray layer must share one size + format. Decompress to
+        # RGBA8: the FSH textures are DXT1 (BC1), whose 1-bit punch-through alpha
+        # marks the sprite's transparent background. Godot uploads FORMAT_DXT1 to
+        # the GPU as an OPAQUE BC1 format, so that alpha would be ignored and the
+        # transparent (pure-black) texels would render as solid black boxes.
+        var w = 0
+        var h = 0
+        for e in entries:
+            w = max(w, e["img"].get_width())
+            h = max(h, e["img"].get_height())
+        var prepared : Array[Image] = []
+        for e in entries:
+            var im = e["img"].duplicate()
+            if im.is_compressed():
+                im.decompress()
+            im.convert(Image.FORMAT_RGBA8)
+            if im.get_width() != w or im.get_height() != h:
+                im.resize(w, h)
+            prepared.append(im)
+        var textarr = Texture2DArray.new()
+        textarr.create_from_images(prepared)
+
+        var vertices = PackedVector3Array([])
+        var UVs = PackedVector2Array([])
+        var layers = PackedColorArray([])
+        for layer in range(entries.size()):
+            var group = entries[layer]["group"]
+            var lf : float = float(layer) / 255.0
+            for vertind in range(group.vertices.size() - 1, -1, -1):
+                vertices.append(group.vertices[vertind])
+                UVs.append(group.UVs[vertind])
                 layers.append(Color(lf, 0.0, 0.0, 1.0))
-            t += 3
-    if vertices.is_empty():
+        var arrays : Array = []
+        arrays.resize(ArrayMesh.ARRAY_MAX)
+        arrays[ArrayMesh.ARRAY_VERTEX] = vertices
+        arrays[ArrayMesh.ARRAY_TEX_UV] = UVs
+        arrays[ArrayMesh.ARRAY_COLOR] = layers
+        array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+        var mat = (blend_mat_base if bucket_name == "blend" else opaque_mat_base).duplicate()
+        mat.set_shader_parameter("s3dtexture", textarr)
+        array_mesh.surface_set_material(surface, mat)
+        surface += 1
+    if surface == 0:
         return {}
-    var array_mesh : ArrayMesh = ArrayMesh.new()
-    var arrays : Array = []
-    arrays.resize(ArrayMesh.ARRAY_MAX)
-    arrays[ArrayMesh.ARRAY_VERTEX] = vertices
-    arrays[ArrayMesh.ARRAY_TEX_UV] = UVs
-    arrays[ArrayMesh.ARRAY_COLOR] = layers
-    array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-    return {"mesh": array_mesh, "texture": textarr}
+    return {"mesh": array_mesh}
 
 func get_texture_from_mat_id(iid):
     var fsh_subfile = Core.subfile(
