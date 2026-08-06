@@ -96,6 +96,11 @@ func _ready():
 # reports rather than fails the run.
 const MIN_EDGE_AGREEMENT : float = 0.99
 
+# A city's drivable tiles should nearly all hang together. Fragmentation is the
+# first visible symptom of boundaries failing to merge, and it shows up here
+# long before anything looks wrong on screen.
+const MIN_LARGEST_COMPONENT : float = 0.90
+
 func _check_network(city) -> bool:
     print("\n--- network model checks ---")
     var model = city.network_model
@@ -159,4 +164,203 @@ func _check_network(city) -> bool:
         push_error("%d cells fall outside the map" % out_of_bounds)
         ok = false
 
+    return _check_graph(city, model) and ok
+
+# Checks the graph derived from the model. The structural assertions are cheap
+# and catch the bookkeeping mistakes that are otherwise invisible: an arc
+# pointing at a node that no longer exists still renders fine.
+func _check_graph(city, model) -> bool:
+    var graph = city.network_graph
+    if graph == null:
+        if model.size() == 0:
+            return true
+        push_error("model has tiles but no graph was built")
+        return false
+
+    print("\n--- network graph checks ---")
+    var ok := true
+    print("  info  %d arcs over %d nodes, classes %s"
+        % [graph.arc_count(), graph.node_count(), graph.class_histogram()])
+
+    if model.size() == 0:
+        print("  note  empty network, nothing to check")
+        return true
+
+    var problems = graph.validate()
+    if problems.is_empty():
+        print("  ok    graph structurally sound")
+    else:
+        for problem in problems.slice(0, 8):
+            push_error("graph: %s" % problem)
+        if problems.size() > 8:
+            push_error("graph: ... and %d more" % (problems.size() - 8))
+        ok = false
+
+    # Roads and streets carry cars; rail does not. If the class tagging were
+    # lost, every network would look alike and routing would send cars down
+    # railway lines.
+    var hist = graph.class_histogram()
+    if hist.get("Car", 0) > 0 and hist.get("Sim", 0) > 0:
+        print("  ok    car and pedestrian arcs both present")
+    else:
+        push_error("expected both Car and Sim arcs, got %s" % hist)
+        ok = false
+
+    # One-sided portals are normal and numerous: dead ends, the map border, and
+    # lanes whose neighbouring piece simply has no matching lane -- a sidewalk
+    # running down one side of a street, a turn pocket that stops. What is NOT
+    # normal is the stitch leaving a pairing on the table, so assert on that
+    # rather than on a raw count. `missed_pairable` is how many one-sided
+    # portals had a still-one-sided complement within tolerance that the stitch
+    # failed to take.
+    var dangle = graph.dangling_report()
+    var diag = graph.stranded_diagnosis()
+    print("  info  %d one-sided portals: %d at dead ends, %d facing an occupied neighbour %s"
+        % [dangle["total"], dangle["dead_end"], dangle["stranded"], diag["by_class"]])
+    if diag["missed_pairable"] == 0:
+        print("  ok    stitch took every available pairing (median gap to the nearest already-claimed lane %.2f m)"
+            % diag["gap_median"])
+    else:
+        push_error("stitch left %d pairable portals unmatched -- %s"
+            % [diag["missed_pairable"], diag])
+        ok = false
+
+    # A city's road network should be essentially one connected thing. If
+    # boundaries stopped merging this fragments long before anything else
+    # visibly breaks.
+    #
+    # Avenues are the known exception and are not yet counted against us. An
+    # avenue is one network two tiles wide, and its two carriageways exchange
+    # traffic across the shared median (RUL edge code 4) rather than through
+    # per-tile paths -- SC4's avenue/road intersection piece 0x04005500 emits
+    # only the lanes ARRIVING at the junction, with nothing departing into the
+    # avenue. Until median pairing is modelled, a city with avenues genuinely
+    # does fragment here. Rush Hour Tutorial (43 avenue tiles) drops to ~59%,
+    # while avenue-free cities sit at 96-99%.
+    var sizes = graph.component_cell_sizes(SC4PathSubfile.CLASS_CAR)
+    var avenue_cells := 0
+    for cell in model.tiles.keys():
+        if model.is_multi_tile_network(model.tiles[cell]):
+            avenue_cells += 1
+    if sizes.is_empty():
+        push_error("no car-class components at all")
+        ok = false
+    else:
+        var car_cells := 0
+        for size in sizes:
+            car_cells += size
+        var share : float = float(sizes[0]) / float(max(1, car_cells))
+        var summary := "largest car component covers %d of %d drivable tiles (%.1f%%), %d components" \
+            % [sizes[0], car_cells, share * 100.0, sizes.size()]
+        if avenue_cells > 0:
+            print("  note  %s -- %d two-tile (avenue) tiles present, median pairing not modelled yet"
+                % [summary, avenue_cells])
+        elif share >= MIN_LARGEST_COMPONENT:
+            print("  ok    %s" % summary)
+        else:
+            push_error("%s -- the network is fragmenting" % summary)
+            ok = false
+
+    ok = _check_rail_purity(model, graph) and ok
+    ok = _check_incremental(city, model, graph) and ok
     return ok
+
+# Rail-only tiles must carry Train arcs and no Car arcs. If the class tag were
+# dropped somewhere every network would look alike, and routing would happily
+# send commuters down a railway line -- a failure that renders perfectly.
+const NETWORK_RAIL : int = 1
+
+func _check_rail_purity(model, graph) -> bool:
+    var rail_cells := 0
+    var with_train := 0
+    var with_cars : Array = []
+    for cell in model.tiles.keys():
+        var tile = model.tiles[cell]
+        # Skip level crossings: those tiles legitimately carry both.
+        if tile.network_types != [NETWORK_RAIL]:
+            continue
+        rail_cells += 1
+        var saw_train := false
+        for idx in graph.arcs_by_cell.get(cell, []):
+            var arc = graph.arcs[idx]
+            if arc == null:
+                continue
+            if arc.transport_class == SC4PathSubfile.CLASS_TRAIN:
+                saw_train = true
+            elif arc.transport_class == SC4PathSubfile.CLASS_CAR:
+                with_cars.append(cell)
+        if saw_train:
+            with_train += 1
+    if rail_cells == 0:
+        print("  note  no rail-only tiles in this city")
+        return true
+    if not with_cars.is_empty():
+        push_error("%d rail-only tiles carry Car arcs, e.g. %s"
+            % [with_cars.size(), with_cars.slice(0, 3)])
+        return false
+    print("  ok    %d of %d rail-only tiles carry Train arcs, none carry Car"
+        % [with_train, rail_cells])
+    return true
+
+# The single most valuable check here: an incremental update after an edit must
+# land on exactly the state a full rebuild would produce. Node and arc counts
+# alone pass while one side of a boundary is stale, so compare the fingerprint,
+# which folds in every arc's endpoints.
+func _check_incremental(city, model, graph) -> bool:
+    var before : int = graph.fingerprint()
+    var before_arcs : int = graph.arc_count()
+    var before_nodes : int = graph.node_count()
+
+    # Pick a real road tile with neighbours, so removing it actually disturbs
+    # something, and prefer one in the middle of a run.
+    var victim = _pick_victim(model)
+    if victim == null:
+        print("  note  no suitable tile to test removal against")
+        return true
+
+    var removed = model.remove([victim])
+    var after_remove : int = graph.fingerprint()
+    if after_remove == before:
+        push_error("removing tile %s left the graph fingerprint unchanged" % victim)
+        return false
+    print("  ok    removing %s changed the graph (%d cells dirtied)" % [victim, removed.size()])
+
+    # Removal must be reflected in a full rebuild the same way.
+    var incremental_after_remove : int = graph.fingerprint()
+    graph.rebuild()
+    if graph.fingerprint() != incremental_after_remove:
+        push_error("after removal, incremental graph disagrees with a full rebuild")
+        model.undo()
+        return false
+    print("  ok    incremental removal matches a full rebuild")
+
+    # Put it back and confirm we land exactly where we started.
+    model.undo()
+    var restored : int = graph.fingerprint()
+    var ok := true
+    if restored != before:
+        push_error("undo did not restore the graph: fingerprint %d vs %d" % [restored, before])
+        ok = false
+    elif graph.arc_count() != before_arcs or graph.node_count() != before_nodes:
+        push_error("undo restored the fingerprint but not the counts: %d/%d vs %d/%d"
+            % [graph.arc_count(), graph.node_count(), before_arcs, before_nodes])
+        ok = false
+    else:
+        print("  ok    undo restored the graph exactly (%d arcs, %d nodes)"
+            % [before_arcs, before_nodes])
+    return ok
+
+# A tile with two opposite neighbours, i.e. one in the middle of a run, so
+# removing it is a real topology change rather than trimming a dead end.
+func _pick_victim(model):
+    var best = null
+    for cell in model.tiles.keys():
+        var tile = model.tiles[cell]
+        if tile.connected_sides().size() != 2:
+            continue
+        var neighbours = model.occupied_neighbours(cell)
+        if neighbours.size() < 2:
+            continue
+        if best == null or (cell.x + cell.y) < (best.x + best.y):
+            best = cell
+    return best

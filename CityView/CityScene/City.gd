@@ -525,6 +525,10 @@ var save_network_tiles : Array = []
 # the tool -- goes through this rather than the raw arrays.
 var network_model : NetworkModel = null
 
+# The routable graph derived from the model: lanes, turns and travel times.
+# It keeps itself current off the model's tiles_changed signal.
+var network_graph : NetworkGraph = null
+
 # FSH group holding network surface textures; instance = family + zoom 0..4.
 # Same group the interactive build tool uses (TransitTiles.gd).
 const NETWORK_TEXTURE_GROUP : int = 0x1abe787d
@@ -572,6 +576,14 @@ func load_networks():
     var rate = 100.0 * orient["agreed"] / max(1, orient["checked"])
     Log.info("Path/save edge agreement: %d of %d tiles (%.1f%%), %d deferred as 2-tile networks, %d without a path"
         % [orient["agreed"], orient["checked"], rate, orient["deferred"], orient["no_path"]])
+    # Build the graph after the model is populated, then let it follow every
+    # later edit incrementally.
+    network_graph = NetworkGraph.new(network_model)
+    network_model.tiles_changed.connect(network_graph.update)
+    Log.info("Network graph: %d arcs over %d nodes, classes %s, %d dangling portals"
+        % [network_graph.arc_count(), network_graph.node_count(),
+           network_graph.class_histogram(), network_graph.dangling_portals()])
+
     if not orient["mismatches"].is_empty():
         # Grouped so the residual stays diagnosable rather than just being a
         # number that drifts. Expect these to be avenue medians (edge code 4,

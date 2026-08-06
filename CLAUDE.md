@@ -135,8 +135,17 @@ Everything flows through this singleton.
   apart. Note a tile's connected edges are the **union of all `crossings` entries**, not just
   `crossings[0]` — a level crossing puts its second network in `crossings[1..]`. Avenues are
   one network two tiles wide and are handled as a special case throughout.
-  `CityView/ClassDefinitions/` still holds the older, unwired graph sketches (`NetGraphNode`,
-  `NetGraphEdge`, `NeworkGraph.gd` — note the typo; it is dead and broken).
+  `NetworkGraph.gd` derives the routable graph from it and follows every later edit off
+  `tiles_changed`. Nodes are **portals** — one lane crossing one boundary, for one traveller
+  class — not one node per tile side, so one-way roads and banned turns survive. Arcs come
+  one per SC4Path record with class and true length in metres. Neighbouring tiles' portals
+  are matched by position, not by declared direction. Big City Tutorial yields 16,770 arcs
+  over 14,952 nodes, largest car component 96.3% of drivable tiles. **Avenues are a known
+  gap**: they are one network two tiles wide whose carriageways trade traffic across the
+  median, which per-tile paths do not describe, so avenue cities fragment — see
+  `dev_notes/save_file_analysis` §10.
+  `CityView/ClassDefinitions/` still holds the older, unwired sketches (`NetGraphNode`,
+  `NetGraphEdge`, `NetTile`), kept only because `TransitTiles.gd` still references them.
 - **DAT Explorer** (`DATExplorer/`): a `Tree` browser over loaded DBPF archives with TGI
   filters and subfile previews. Dev tool.
 

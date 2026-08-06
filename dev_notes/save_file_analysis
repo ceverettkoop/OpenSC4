@@ -683,6 +683,42 @@ all 9,166 tiles of the nine populated shipped cities**, with 170 avenue tiles de
 consumes it yet; bridges come through `BridgeNetworkSubfile.gd`, whose tail is still undecoded.
 Stop records are parsed but unused — they are where transit stations and signals attach.
 
+## 10. The network graph (`CityView/Network/NetworkGraph.gd`)
+
+Built from `NetworkModel` + `SC4Path`. Nodes are **portals** — one point on a tile boundary where
+one lane crosses, for one traveller class — not one node per tile side. An avenue crosses a boundary
+at four separate lane offsets; collapsing them would make the two carriageways mutually reachable at
+every tile, inventing turns SC4 forbids. Arcs are one per path record, directed entry→exit, carrying
+class and true length in metres.
+
+Portals are matched between neighbouring tiles by **position**: the boundary comes from the path's
+entry/exit edge (exact, see §9), the lane identity from the coordinate. Exact key matches merge for
+free; the rest go through a greedy nearest-first pass with a 2 m tolerance.
+
+Big City Tutorial: **16,770 arcs over 14,952 nodes** from 3,335 tiles — Car 8,256, Sim 8,220,
+Train 294. Largest car component covers **3,129 of 3,250 drivable tiles (96.3%)** over 10 components.
+All 135 rail-only tiles carry Train arcs and none carry Car. Konradshohe: 99.1% over 3 components.
+
+**One-sided portals are normal.** Big City has 1,642 (30 dead ends, 1,612 facing an occupied
+neighbour). These are not stitch failures — the harness measures `missed_pairable`, the number with a
+still-unpaired complement inside tolerance, and it is **0**. They are lanes whose neighbouring piece
+simply has no matching lane: a sidewalk down one side of a street, a turn pocket that stops. Most are
+Sim (1,249 of 1,612).
+
+### Known limitation: avenues fragment the car graph
+
+An avenue is one network **two tiles wide**, and its carriageways exchange traffic across the shared
+median (RUL edge code `4`) rather than through per-tile paths. Concretely, SC4's avenue/road
+intersection piece `0x04005500` emits only the lanes *arriving* at the junction: at the boundary
+between (47,72) and (47,73) in Rush Hour Tutorial, **both** tiles emit arcs starting there, at
+identical coordinates, and nothing arrives. The portal is one-sided and unfixable by stitching,
+because the inbound movement is a median crossing the path files do not describe.
+
+So Rush Hour Tutorial (43 avenue tiles) drops to a largest car component of **59.0% over 16
+components**, while avenue-free cities sit at 96–99%. The harness reports rather than fails when
+avenue tiles are present. Closing this needs proper 2-tile-network modelling: pairing tiles across
+their code-`4` edges and linking the carriageways.
+
 ## Appendix A — SimGrid layer inventory (dataIds)
 
 All 136 grids parse with the 55-byte header `size, crc, mem, u16 major, u8, u32 ownType,

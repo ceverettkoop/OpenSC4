@@ -335,7 +335,7 @@ func orientation_report() -> Dictionary:
             checked += 1
             agreed += 1
             continue
-        if _is_multi_tile_network(tile):
+        if is_multi_tile_network(tile):
             deferred += 1
             continue
         checked += 1
@@ -354,7 +354,7 @@ func orientation_report() -> Dictionary:
 
 # Whether this tile is half of a network that spans two tiles, and so cannot be
 # expected to describe its own edges on its own.
-func _is_multi_tile_network(tile : Tile) -> bool:
+func is_multi_tile_network(tile : Tile) -> bool:
     if tile.network_types.has(NETWORK_AVENUE):
         return true
     for side in range(4):
