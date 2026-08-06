@@ -37,7 +37,7 @@ func load(file, dbdf=null):
         var size = _u32(pos)
         if size < 4 or pos + size > n:
             break
-        var marker = _find_marker(pos, pos + size)
+        var marker = _find_marker(pos, pos + size, EXEMPLAR_TYPE)
         if marker >= 0 and marker + OFF_ORIENTATION < pos + size:
             var rec = FloraRecord.new()
             rec.exemplar_tgi = [
@@ -53,21 +53,3 @@ func load(file, dbdf=null):
             records.append(rec)
         pos += size
     return OK
-
-# Little-endian u32 read straight from raw_data.
-func _u32(o : int) -> int:
-    return raw_data[o] | (raw_data[o + 1] << 8) | (raw_data[o + 2] << 16) | (raw_data[o + 3] << 24)
-
-# First offset in [from, to) whose 4 LE bytes equal the Exemplar type id, or -1.
-func _find_marker(from : int, to : int) -> int:
-    var b0 = EXEMPLAR_TYPE & 0xff
-    var b1 = (EXEMPLAR_TYPE >> 8) & 0xff
-    var b2 = (EXEMPLAR_TYPE >> 16) & 0xff
-    var b3 = (EXEMPLAR_TYPE >> 24) & 0xff
-    var o = from
-    var limit = to - 4
-    while o <= limit:
-        if raw_data[o] == b0 and raw_data[o + 1] == b1 and raw_data[o + 2] == b2 and raw_data[o + 3] == b3:
-            return o
-        o += 1
-    return -1

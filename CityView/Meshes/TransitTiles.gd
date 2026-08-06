@@ -108,8 +108,6 @@ func _ready():
                                 layer_arr.append(line[2])
                         if layer_arr.has(line[2]):
                             layer_inds[line[1]] = layer_arr.find(line[2])
-                if wnes == [0,2,11,2]:
-                    print("debug")
                 self.transit_tiles[t_type][wnes].append(TransitTile.new(rul_edges, rul_ids, layer_inds))
     # Build the transit texture array (Godot 4 API: create_from_images). FSH
     # images may be compressed (DXT) and differently sized, so normalise each to
@@ -289,8 +287,6 @@ func _drag_network(start, end, type):
         var edge_base = edges[0][int_i].duplicate()
         # if intersection needs diagonals to be adjusted
         if not self.transit_tiles[type].has(edge_base):
-            if edge_base == [2,0,1,0]:
-                print("debug")
             var loc_to_fix = [edges[1][int_i]]
             var edge_ind_affected = []
             # while there is locations to fix, fix them
@@ -344,8 +340,6 @@ func _drag_network(start, end, type):
                                 option.append(diag_inds[i])
                                 options.append(option.duplicate())
                     # the above might not work, and was adding null values instead of edge combinations
-                    if options.has(null):
-                        print("debug")
                     # go over the options
                     for option in options:
                         var edge_option = edge_fix.duplicate()
@@ -591,10 +585,6 @@ func _drag_network(start, end, type):
                         flip_uvs.append(rot_uvs[0])
                     else:
                         flip_uvs = rot_uvs
-                    if edges[0][h_i] == [0,2,11,2] or edges[0][h_i] == [11,2,0,2]:
-                        print(overridden, edges[1][h_i], overrider)
-                        print(tile.ids[sub_tile], flip_uvs)
-                        print("debug")
                     var normal_verts = []
                     var sub_vec = edges[1][h_i] + neigh_num_to_vec[sub_tile]
                     for vec_i in range(6):

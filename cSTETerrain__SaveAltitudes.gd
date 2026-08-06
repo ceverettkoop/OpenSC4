@@ -12,8 +12,7 @@ func load(file, dbpf=null):
     super.load(file, dbpf)
     stream.data_array = raw_data
     var major = stream.get_16()
-    print("major: %08x" % major)
-    print("size: %d" % stream.get_size())
+    Log.debug("cSTETerrain altitudes: major %04x, %d bytes" % [major, stream.get_size()])
     for i in stream.get_size() / 4:
         altitudes.append(stream.get_float())
 

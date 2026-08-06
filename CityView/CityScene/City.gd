@@ -405,6 +405,9 @@ func create_terrain():
     if savefile != null:
         load_lots()
         load_lot_textures()
+        load_networks()
+        load_pipes()
+        load_network_index()
         load_buildings()
 
 # Parsed LotSubfile records (tile rects, zoning, wealth, orientation). No direct
@@ -511,6 +514,248 @@ func _lot_texture(family_iid : int) -> Variant:
             return Core.subfile(0x7ab50e44, LOT_TEXTURE_GROUP, cand, FSHSubfile).get_as_texture()
     return null
 
+# Parsed ground-network tiles (roads, streets, avenues, rail...). Each record
+# carries its own finished quad, so rendering reads straight from here.
+var network_tiles : Array = []
+
+# FSH group holding network surface textures; instance = family + zoom 0..4.
+# Same group the interactive build tool uses (TransitTiles.gd).
+const NETWORK_TEXTURE_GROUP : int = 0x1abe787d
+const NETWORK_TEXTURE_ZOOM : int = 4
+# Network quads sit at the terrain height SC4 baked into the record, so they
+# need lifting clear of the lot base textures. Those go up to
+# 0.015 + 0.004 * 7 = 0.043, so the network base must start above that or a
+# high-priority lot apron buries the road where they overlap at intersections.
+const NETWORK_BASE_LIFT : float = 0.055
+const NETWORK_SURFACE_LIFT : float = 0.075
+
+# Reads the city's ground-network subfile and draws every tile.
+#
+# Unlike the lot base textures we do not synthesise the geometry: each record
+# already holds the four corners SC4 computed (terrain-following, so sloped
+# roads come out right), their texture coordinates and the lighting colour it
+# baked at save time. We draw two stacked quads per tile -- the base texture
+# (sidewalk/wealth fill) underneath, the network surface on top -- batched into
+# one mesh per texture family.
+func load_networks():
+    var nindex = savefile.indices_by_type.get(0xc9c05c6e, [])
+    if nindex.is_empty():
+        Log.info("City has no network subfile")
+        return
+    var idx = nindex[0]
+    var nsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, NetworkSubfile)
+    network_tiles = nsub.tiles
+    Log.info("Network subfile: %d tiles, %d layout failures, types %s"
+        % [network_tiles.size(), nsub.layout_failures, nsub.type_histogram()])
+
+    var root = Node3D.new()
+    root.name = "Networks"
+    $Node3D.add_child(root)
+
+    # Batch by (texture family, layer) so each family is one mesh + one material.
+    var by_family = {}
+    var drawn = 0
+    for tile in network_tiles:
+        if not tile.is_present():
+            continue
+        drawn += 1
+        if tile.base_texture != 0:
+            _queue_network_quad(by_family, tile.base_texture, tile, NETWORK_BASE_LIFT)
+        if tile.texture_id != 0:
+            _queue_network_quad(by_family, tile.texture_id, tile, NETWORK_SURFACE_LIFT)
+
+    # Bridge/elevated decks store the same four-vertex quad, so they batch into
+    # the same meshes. They sit above the terrain already, so no lift.
+    drawn += _queue_bridges(by_family)
+
+    var missing = {}
+    for iid in by_family.keys():
+        var tex = _network_texture(iid)
+        if tex == null:
+            missing[iid] = by_family[iid]["verts"].size() / 4
+            continue
+        var arrays = []
+        arrays.resize(ArrayMesh.ARRAY_MAX)
+        arrays[ArrayMesh.ARRAY_VERTEX] = by_family[iid]["verts"]
+        arrays[ArrayMesh.ARRAY_TEX_UV] = by_family[iid]["uvs"]
+        arrays[ArrayMesh.ARRAY_COLOR] = by_family[iid]["colors"]
+        arrays[ArrayMesh.ARRAY_INDEX] = by_family[iid]["indices"]
+        var mesh = ArrayMesh.new()
+        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+        var mat = StandardMaterial3D.new()
+        mat.albedo_texture = tex
+        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        mat.vertex_color_use_as_albedo = true
+        mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        # Each tile's UVs span the full 0..1 of its texture, so the sampler must
+        # CLAMP: with the default repeat, a pixel on a tile edge filters against
+        # the texture's opposite edge and leaves a hairline seam along every
+        # tile boundary. Scissor rather than blend, so these stay in the opaque
+        # pass and sort by depth -- alpha-blended networks land in the
+        # transparent pass, where per-object ordering let lot aprons and the
+        # network's own base layer draw over the road at intersections.
+        mat.texture_repeat = false
+        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+        mesh.surface_set_material(0, mat)
+        var mi = MeshInstance3D.new()
+        mi.mesh = mesh
+        root.add_child(mi)
+    Log.info("Drew %d network tiles (%d texture families, %d missing from the DATs)"
+        % [drawn, by_family.size(), missing.size()])
+    if not missing.is_empty():
+        Log.warn("load_networks: texture families missing from the DATs: %s" % missing)
+
+# Reads the bridge/elevated subfile and adds its decks to the network batches.
+# Returns how many tiles were queued.
+func _queue_bridges(by_family : Dictionary) -> int:
+    var bindex = savefile.indices_by_type.get(0xca16374f, [])
+    if bindex.is_empty():
+        return 0
+    var idx = bindex[0]
+    var bsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, BridgeNetworkSubfile)
+    bridge_tiles = bsub.tiles
+    Log.info("Bridge subfile: %d deck tiles, %d layout failures"
+        % [bridge_tiles.size(), bsub.layout_failures])
+    var drawn = 0
+    for tile in bridge_tiles:
+        if not tile.is_present():
+            continue
+        drawn += 1
+        if tile.base_texture != 0:
+            _queue_network_quad(by_family, tile.base_texture, tile, 0.0)
+        if tile.model_id != 0:
+            _queue_network_quad(by_family, tile.model_id, tile, 0.0)
+    return drawn
+
+# Appends one tile quad to the batch for `iid`, lifted clear of the terrain.
+func _queue_network_quad(by_family : Dictionary, iid : int, tile, lift : float):
+    if not by_family.has(iid):
+        by_family[iid] = {
+            "verts": PackedVector3Array(),
+            "uvs": PackedVector2Array(),
+            "colors": PackedColorArray(),
+            "indices": PackedInt32Array(),
+        }
+    var batch = by_family[iid]
+    var base = batch["verts"].size()
+    for v in tile.vertices:
+        # Record positions are metres in the same frame as the heightmap.
+        batch["verts"].append(Vector3(v.position.x / TILE_SIZE,
+            v.position.y / TILE_SIZE + lift, v.position.z / TILE_SIZE))
+        batch["uvs"].append(v.uv)
+        batch["colors"].append(v.color)
+    for i in [0, 1, 2, 0, 2, 3]:
+        batch["indices"].append(base + i)
+
+# Parsed water-pipe tiles, and the network index the game keeps over all of the
+# network subfiles at once.
+var pipe_tiles : Array = []
+var bridge_tiles : Array = []
+var network_index : NetworkIndexSubfile = null
+var power_lines : PowerLineSubfile = null
+var lot_structures : Array = []
+# Exemplar TGI string -> {texture, tiling, iid} or null for known-unskinnable.
+var lot_structure_skins : Dictionary = {}
+
+# Wire attachment height above a pylon's origin, and half-width of the drawn
+# span, both in world units (tiles).
+const POWER_WIRE_HEIGHT : float = 1.6
+const POWER_WIRE_WIDTH : float = 0.02
+
+# Reads the pipe subfile. Pipes are underground, so SC4 only shows them in the
+# water data view; we build the geometry into a hidden node that
+# set_pipes_visible() reveals, rather than drawing it over the city.
+func load_pipes():
+    var pindex = savefile.indices_by_type.get(0x49c05b9f, [])
+    if pindex.is_empty():
+        Log.info("City has no pipe subfile")
+        return
+    var idx = pindex[0]
+    var psub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, PipeSubfile)
+    pipe_tiles = psub.tiles
+    Log.info("Pipe subfile: %d tiles, %d layout failures" % [pipe_tiles.size(), psub.layout_failures])
+
+    var root = Node3D.new()
+    root.name = "Pipes"
+    root.visible = false
+    $Node3D.add_child(root)
+
+    # A flat marker per tile. The pipe's own texture id is a tile-shape code
+    # from the network piece tables, not a ground texture, so tinting is more
+    # honest than stretching a road texture over it.
+    var verts = PackedVector3Array()
+    var indices = PackedInt32Array()
+    for tile in pipe_tiles:
+        if not tile.is_present():
+            continue
+        var base = verts.size()
+        for v in tile.vertices:
+            verts.append(Vector3(v.position.x / TILE_SIZE,
+                v.position.y / TILE_SIZE + NETWORK_SURFACE_LIFT, v.position.z / TILE_SIZE))
+        for i in [0, 1, 2, 0, 2, 3]:
+            indices.append(base + i)
+    if verts.is_empty():
+        return
+    var arrays = []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = verts
+    arrays[ArrayMesh.ARRAY_INDEX] = indices
+    var mesh = ArrayMesh.new()
+    mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    var mat = StandardMaterial3D.new()
+    mat.albedo_color = Color(0.25, 0.65, 1.0, 0.75)
+    mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    # Pipe tiles sit a median 10 m BELOW the terrain surface (measured across
+    # this save: -6.5 m to -25.5 m), so drawing them normally just buries them
+    # in the ground. The underground view is an x-ray: skip the depth test and
+    # draw last, so the network reads through the terrain above it.
+    mat.no_depth_test = true
+    mat.render_priority = 10
+    mesh.surface_set_material(0, mat)
+    var mi = MeshInstance3D.new()
+    mi.mesh = mesh
+    root.add_child(mi)
+
+# Whether the underground (pipe) view is showing. Toggled with U.
+var underground_view : bool = false
+
+func set_pipes_visible(on : bool):
+    underground_view = on
+    var root = $Node3D.get_node_or_null("Pipes")
+    if root != null:
+        root.visible = on
+
+func toggle_underground_view() -> bool:
+    set_pipes_visible(not underground_view)
+    return underground_view
+
+# Reads the game's own index over the network subfiles. Nothing renders from it
+# -- it is the authority for "which occupant is on this tile", which simulation
+# and tool work will need. See NetworkIndexSubfile for what is and is not
+# decoded.
+func load_network_index():
+    var iindex = savefile.indices_by_type.get(0x6a0f82b2, [])
+    if iindex.is_empty():
+        Log.info("City has no network index subfile")
+        return
+    var idx = iindex[0]
+    network_index = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, NetworkIndexSubfile)
+    Log.info("Network index: version %d, %d city tiles, %d/%d tile references recovered, by subfile %s"
+        % [network_index.major, network_index.city_tile_count, network_index.tile_refs.size(),
+           network_index.network_tile_count, network_index.type_histogram()])
+
+# Resolves a network texture family iid to an ImageTexture, preferring the
+# sharpest zoom variant present in the loaded DATs. Returns null if none exist.
+func _network_texture(family_iid : int) -> Variant:
+    for z in range(NETWORK_TEXTURE_ZOOM, -1, -1):
+        if Core.subfile_indices.has(SubfileTGI.TGI2str(0x7ab50e44, NETWORK_TEXTURE_GROUP, family_iid + z)):
+            return Core.subfile(0x7ab50e44, NETWORK_TEXTURE_GROUP, family_iid + z, FSHSubfile).get_as_texture()
+    if Core.subfile_indices.has(SubfileTGI.TGI2str(0x7ab50e44, NETWORK_TEXTURE_GROUP, family_iid)):
+        return Core.subfile(0x7ab50e44, NETWORK_TEXTURE_GROUP, family_iid, FSHSubfile).get_as_texture()
+    return null
+
 # Exact heightmap value (world units) at a tile CORNER (grid vertex), unlike
 # _height_at which samples per-tile.
 func _corner_height(x : int, z : int) -> float:
@@ -568,6 +813,234 @@ func load_flora():
     var fsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, FloraSubfile)
     Log.info("Flora subfile: %d records" % fsub.records.size())
     _place_occupants(fsub.records, "flora")
+    load_power_lines()
+    load_lot_structures()
+
+# Power lines come as two cross-referencing subfiles: the pylons (which carry an
+# Exemplar TGI and so go through the same S3D pipeline as buildings) and the
+# spans between them (which name their two pylons by memory address). Runs after
+# the occupants so the shared S3D material bases are ready.
+func load_power_lines():
+    var lindex = savefile.indices_by_type.get(0xc9c05c5d, [])
+    var pindex = savefile.indices_by_type.get(0x09c05c6a, [])
+    if lindex.is_empty() and pindex.is_empty():
+        Log.info("City has no power lines")
+        return
+    var lsub : PowerLineSubfile = null
+    if not lindex.is_empty():
+        var li = lindex[0]
+        lsub = savefile.get_subfile(li.type_id, li.group_id, li.instance_id, PowerLineSubfile)
+    if not pindex.is_empty():
+        var pi = pindex[0]
+        var psub = savefile.get_subfile(pi.type_id, pi.group_id, pi.instance_id, PowerLineSubfile)
+        if lsub == null:
+            lsub = psub
+        else:
+            lsub.adopt_poles(psub)
+    power_lines = lsub
+    Log.info("Power lines: %d spans, %d pylons, %d layout failures"
+        % [lsub.lines.size(), lsub.poles.size(), lsub.layout_failures])
+
+    var pylons = []
+    for mem in lsub.poles.keys():
+        if lsub.poles[mem].is_present():
+            pylons.append(lsub.poles[mem])
+    _place_occupants(pylons, "power pylons")
+    _draw_power_spans(lsub)
+
+# Exemplar properties on a foundation/retaining-wall exemplar. Each names five
+# FSH instances (zoom 0..4) plus the world size, in metres, that one repeat of
+# the texture covers.
+const WALL_TEXTURES_PROP : int = 0x295961f2
+const WALL_TILING_PROP : int = 0x295961f3
+const FOUNDATION_TEXTURES_PROP : int = 0x68fcff37
+const FOUNDATION_TILING_PROP : int = 0xc911eda0
+const WALL_TEXTURE_GROUP : int = 0x891b0e1a       # TERRAIN_FOUNDATION
+const FOUNDATION_TEXTURE_GROUP : int = 0x1abe787d # UI_IMAGE2
+
+# Reads the retaining walls and foundations SC4 builds under a lot when the
+# ground beneath it is not flat.
+#
+# These are NOT S3D occupants: their exemplars carry no model reference, only a
+# set of five zoom variants of a wall/concrete texture and the world size one
+# repeat covers ('LotRetainingWall-r$co', 'Concrete Hori'). SC4 stretches that
+# texture over a box sized by the record, so that is what we build -- the four
+# vertical faces of a box, from the lot surface down by the record's height.
+func load_lot_structures():
+    for entry in [[0x49c05c8f, "foundations"], [0x49c05c9f, "retaining walls"]]:
+        var sindex = savefile.indices_by_type.get(entry[0], [])
+        if sindex.is_empty():
+            continue
+        var idx = sindex[0]
+        var sub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, LotStructureSubfile)
+        var present = []
+        for s in sub.structures:
+            if s.is_present():
+                present.append(s)
+        lot_structures.append_array(present)
+        Log.info("Lot %s: %d records, %d present, %d layout failures"
+            % [entry[1], sub.structures.size(), present.size(), sub.layout_failures])
+        _draw_lot_structures(present, entry[1])
+
+# Batches structures by texture and emits the sides of each box.
+func _draw_lot_structures(items : Array, what : String):
+    if items.is_empty():
+        return
+    var root = $Node3D.get_node_or_null("LotStructures")
+    if root == null:
+        root = Node3D.new()
+        root.name = "LotStructures"
+        $Node3D.add_child(root)
+
+    # The population is mixed: most of these exemplars carry a wall/concrete
+    # texture to stretch over a box, but some carry an RKT1 S3D model instead
+    # (group 0xBADB57F1) and go through the ordinary occupant pipeline.
+    var by_texture = {}
+    var modelled = []
+    for s in items:
+        var skin = _lot_structure_skin(s.exemplar_tgi)
+        if skin == null:
+            modelled.append(s)
+            continue
+        var key = skin["iid"]
+        if not by_texture.has(key):
+            by_texture[key] = {"skin": skin, "verts": PackedVector3Array(),
+                "uvs": PackedVector2Array(), "indices": PackedInt32Array()}
+        _queue_structure_box(by_texture[key], s, skin["tiling"])
+    if not modelled.is_empty():
+        _place_occupants(modelled, what + " (modelled)")
+
+    for key in by_texture.keys():
+        var batch = by_texture[key]
+        var arrays = []
+        arrays.resize(ArrayMesh.ARRAY_MAX)
+        arrays[ArrayMesh.ARRAY_VERTEX] = batch["verts"]
+        arrays[ArrayMesh.ARRAY_TEX_UV] = batch["uvs"]
+        arrays[ArrayMesh.ARRAY_INDEX] = batch["indices"]
+        var mesh = ArrayMesh.new()
+        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+        var mat = StandardMaterial3D.new()
+        mat.albedo_texture = batch["skin"]["texture"]
+        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+        mesh.surface_set_material(0, mat)
+        var mi = MeshInstance3D.new()
+        mi.mesh = mesh
+        root.add_child(mi)
+    Log.info("Drew %d textured %s (%d texture families); %d were modelled instead"
+        % [items.size() - modelled.size(), what, by_texture.size(), modelled.size()])
+
+# Emits the four vertical faces of one structure. The record's altitude is the
+# top (the lot surface); the box drops from there by its height.
+func _queue_structure_box(batch : Dictionary, s, tiling : float):
+    var half_x = s.size_x / 2.0 / TILE_SIZE
+    var half_z = s.size_z / 2.0 / TILE_SIZE
+    var cx = s.pos_x / TILE_SIZE
+    var cz = s.pos_z / TILE_SIZE
+    var top = s.altitude / TILE_SIZE
+    var bottom = (s.altitude - s.height) / TILE_SIZE
+    var corners = [
+        Vector2(cx - half_x, cz - half_z),
+        Vector2(cx + half_x, cz - half_z),
+        Vector2(cx + half_x, cz + half_z),
+        Vector2(cx - half_x, cz + half_z),
+    ]
+    var v_repeats = (s.height / tiling) if tiling > 0.0 else 1.0
+    for i in range(4):
+        var a = corners[i]
+        var b = corners[(i + 1) % 4]
+        var run = a.distance_to(b) * TILE_SIZE          # metres along this face
+        var u_repeats = (run / tiling) if tiling > 0.0 else 1.0
+        var base = batch["verts"].size()
+        batch["verts"].append(Vector3(a.x, top, a.y))
+        batch["verts"].append(Vector3(b.x, top, b.y))
+        batch["verts"].append(Vector3(b.x, bottom, b.y))
+        batch["verts"].append(Vector3(a.x, bottom, a.y))
+        batch["uvs"].append(Vector2(0.0, 0.0))
+        batch["uvs"].append(Vector2(u_repeats, 0.0))
+        batch["uvs"].append(Vector2(u_repeats, v_repeats))
+        batch["uvs"].append(Vector2(0.0, v_repeats))
+        for k in [0, 1, 2, 0, 2, 3]:
+            batch["indices"].append(base + k)
+
+# Resolves a foundation/wall exemplar to {texture, tiling, iid}, or null. The
+# exemplar lists its five zoom variants explicitly, so we index that array
+# rather than doing the usual iid + zoom arithmetic.
+func _lot_structure_skin(exemplar_tgi : Array):
+    var key = SubfileTGI.TGI2str(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2])
+    if lot_structure_skins.has(key):
+        return lot_structure_skins[key]
+    lot_structure_skins[key] = null
+    if not Core.subfile_indices.has(key):
+        return null
+    var ex = Core.subfile(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2], ExemplarSubfile)
+    var textures = ex.properties.get(WALL_TEXTURES_PROP, ex.properties.get(FOUNDATION_TEXTURES_PROP, null))
+    if typeof(textures) != TYPE_ARRAY or textures.is_empty():
+        return null
+    var group = WALL_TEXTURE_GROUP if ex.properties.has(WALL_TEXTURES_PROP) else FOUNDATION_TEXTURE_GROUP
+    var tiling = ex.properties.get(WALL_TILING_PROP, ex.properties.get(FOUNDATION_TILING_PROP, 16.0))
+    if typeof(tiling) == TYPE_ARRAY:
+        tiling = tiling[0]
+    for z in range(min(textures.size(), 5) - 1, -1, -1):
+        var iid = textures[z]
+        if Core.subfile_indices.has(SubfileTGI.TGI2str(0x7ab50e44, group, iid)):
+            var skin = {
+                "texture": Core.subfile(0x7ab50e44, group, iid, FSHSubfile).get_as_texture(),
+                "tiling": float(tiling),
+                "iid": iid,
+            }
+            lot_structure_skins[key] = skin
+            return skin
+    return null
+
+# Draws each span as a thin quad between the two pylons it names. SC4's own wire
+# geometry lives in the undecoded tail of the pylon record, so this is a
+# straight run at the pylons' own height rather than a true catenary.
+func _draw_power_spans(sub : PowerLineSubfile):
+    var verts = PackedVector3Array()
+    var indices = PackedInt32Array()
+    var unresolved = 0
+    for line in sub.lines:
+        if not line.is_present():
+            continue
+        if line.pole_mems.size() != 2 or not sub.poles.has(line.pole_mems[0]) or not sub.poles.has(line.pole_mems[1]):
+            unresolved += 1
+            continue
+        var a = sub.poles[line.pole_mems[0]].position / TILE_SIZE
+        var b = sub.poles[line.pole_mems[1]].position / TILE_SIZE
+        # Hang the wire near the top of the pylon rather than at its base.
+        a.y += POWER_WIRE_HEIGHT
+        b.y += POWER_WIRE_HEIGHT
+        var side = Vector3(0, 1, 0).cross(b - a).normalized() * POWER_WIRE_WIDTH
+        if side == Vector3.ZERO:
+            continue
+        var base = verts.size()
+        verts.append(a - side)
+        verts.append(b - side)
+        verts.append(b + side)
+        verts.append(a + side)
+        for i in [0, 1, 2, 0, 2, 3]:
+            indices.append(base + i)
+    if unresolved > 0:
+        Log.warn("load_power_lines: %d spans reference a pylon that is not in the save" % unresolved)
+    if verts.is_empty():
+        return
+    var arrays = []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = verts
+    arrays[ArrayMesh.ARRAY_INDEX] = indices
+    var mesh = ArrayMesh.new()
+    mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    var mat = StandardMaterial3D.new()
+    mat.albedo_color = Color(0.12, 0.12, 0.13)
+    mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mesh.surface_set_material(0, mat)
+    var mi = MeshInstance3D.new()
+    mi.mesh = mesh
+    mi.name = "PowerSpans"
+    $Node3D.add_child(mi)
 
 # Shared placement loop for occupant records (buildings, props, flora). Records
 # need exemplar_tgi, pos_x, pos_z and orientation. The occupant's own world

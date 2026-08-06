@@ -55,7 +55,3 @@ func load(file, dbdf=null):
             Log.warn("LotBaseTextureSubfile: record at %d failed the entry-count layout check" % pos)
         pos += size
     return OK
-
-# Little-endian u32 read straight from raw_data.
-func _u32(o : int) -> int:
-    return raw_data[o] | (raw_data[o + 1] << 8) | (raw_data[o + 2] << 16) | (raw_data[o + 3] << 24)

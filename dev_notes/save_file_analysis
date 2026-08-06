@@ -4,6 +4,11 @@
 cross-referencing the OpenSC4 codebase plus community documentation. See
 [Sources & confidence](#sources--confidence) for how much to trust each identification.*
 
+*Revised 2026-08-06 while implementing §4.4. That work parsed the network subfiles of all eight
+populated saves in `Regions/`, not just this one, and corrected several identifications this
+document previously had wrong — see §4.4 and the [session log](#7-session-log--2026-08-06) at the
+end for what changed and why.*
+
 ## 1. The file at a glance
 
 | | |
@@ -38,10 +43,10 @@ cross-referencing the OpenSC4 codebase plus community documentation. See
 | Flora | 2,798 (9 distinct exemplars) | `0xA9C05C85` |
 | Lots | 3,569 | `0xC9BD5D4A` |
 | Lot base-texture tiles | 3,623 | `0xC97F987C` |
-| Ground-network tiles (roads/streets/rail/power…) | 3,335 | `0xC9C05C6E` |
-| Water pipes | 1,245 | `0x49C05C9F` |
-| Prebuilt network pieces | 483 | `0x49C05B9F` |
-| Unidentified network-family records | 2,510 | `0x49C05C8F` |
+| Ground-network tiles (road 1,323 / street 1,873 / rail 139) | 3,335 | `0xC9C05C6E` |
+| Water pipes | 483 | `0x49C05B9F` |
+| Lot foundations | 2,510 | `0x49C05C8F` |
+| Lot retaining walls | 1,245 | `0x49C05C9F` |
 | Simulation data grids (SimGrid layers) | 136 | `0x49B9E602…60A` |
 | Ordinance subfiles | ~20 | see §4.6 |
 
@@ -56,25 +61,30 @@ cross-referencing the OpenSC4 codebase plus community documentation. See
 * Savegame records follow SC4's standard serialization: `u32 size, u32 CRC, u32 memory
   address`, then a version and class-specific payload. 120 of the 133 types chain
   cleanly as size-prefixed record arrays (verified while counting the records above).
-* Two well-known network subfiles are **absent** — Network subfile 2 (`0xCA16374F`,
-  bridges/elevated) and the tunnel subfile (`0x8A4BD52F`) — consistent with a flat tutorial
-  city that has no bridges or tunnels.
+* Several network subfiles are **absent from this save** — network subfile 2 (`0xCA16374F`,
+  bridges/elevated), the tunnel subfile (`0x8A4BD52B`), the prebuilt network (`0x49C1A034`) and
+  the power-line pair (`0xC9C05C5D` / `0x09C05C6A`) — consistent with a flat tutorial city with
+  no bridges, tunnels or long-distance power. Other shipped saves do have them: see §4.4.
 
 ## 3. Implementation status in OpenSC4 (summary)
 
-**Implemented today (10 of the 133 types present, ≈49% of the decompressed bytes):**
-building/prop/flora occupants, lots, lot base textures, terrain altitudes (main map only),
-region-view stats, PNG thumbnails, LTEXT, and the DIR directory. In short: **everything the
-current city renderer needs, and nothing of the simulation.**
+**Implemented today (15 of the 133 types present):** building/prop/flora occupants, lots, lot
+base textures, terrain altitudes (main map only), region-view stats, PNG thumbnails, LTEXT, the
+DIR directory, and — as of 2026-08-06 — the whole of §4.4: ground networks, pipes, the network
+index, lot foundations and retaining walls, plus the power-line and bridge subfiles that occur
+in other saves. In short: **everything the city renderer needs to draw a complete city, and
+nothing of the simulation.**
 
-**Not implemented (present in this save):** all network subfiles, the item index, zone
-developer/manager, tract developer, all 136 SimGrid layers, every simulator/manager state
-blob, budget (departments, line items, taxes), the ~20 ordinances, historical graph data,
-advice state, and the COM-serializer registry.
+**Not implemented (present in this save):** the item index, zone developer/manager, tract
+developer, all 136 SimGrid layers, every simulator/manager state blob, budget (departments, line
+items, taxes), the ~20 ordinances, historical graph data, advice state, and the COM-serializer
+registry.
 
-**Engine scaffolding waiting on this data:** `CityView/ClassDefinitions/` (NetGraphNode,
-NetGraphEdge, NetTile, TransitTile) models a transit-network graph but no parser feeds it —
-the network subfiles in §4.4 are exactly the missing input.
+**Engine scaffolding still unfed:** `CityView/ClassDefinitions/` (NetGraphNode, NetGraphEdge,
+NetTile, TransitTile) models a transit-network *graph*. The §4.4 parsers give it geometry but
+not connectivity — that needs `SC4Path` (`0x296678F7`), which has no parser. Note
+`NeworkGraph.gd` (filename typo intentional) is dead and internally inconsistent
+(`tile.networedges` vs `tile.networkedges`); treat it as a sketch, not an API.
 
 Also worth noting: the region UI derives the displayed city name from the *filename*
 (`RegionCityView.gd:22`), while the save carries properly localized name/mayor LTEXTs.
@@ -116,13 +126,84 @@ Confidence legend: **Verified** = parsed by this analysis and/or by OpenSC4 code
 
 ### 4.4 Transport & utility networks
 
-| Type ID | Bytes | Records | Identification | Confidence | OpenSC4 status |
-|---|---:|---:|---|---|---|
-| `0x6A0F82B2` | 2,519,251 | 1 | Network index subfile (per-tile network lookup; SimsWiki calls it "pathfinding") *single 2.5 MB record* | Documented | Not implemented |
-| `0xC9C05C6E` | 781,520 | 3,335 | Network subfile 1 — ground network occupants (roads, streets, rail, avenues, power lines…) *3,335 tile records* | Documented | Not implemented |
-| `0x49C05B9F` | 338,292 | 483 | Prebuilt network subfile (highway & other prebuilt network pieces) *483 records* | Documented | Not implemented |
-| `0x49C05C8F` | 205,820 | 2,510 | Unidentified network-family subfile (ID sits in the 0x49C05### family with pipes/prebuilt; SimsWiki row ambiguous) *2,510 records ≈ subway/underground?* | Inferred | Not implemented |
-| `0x49C05C9F` | 129,480 | 1,245 | Pipe subfile — water pipe occupants *1,245 records* | Documented | Not implemented |
+**Revised 2026-08-06.** The identifications in this section were previously wrong for three of
+the five type IDs, and two further subfiles were missing entirely. The corrected table below was
+established by parsing every record of all eight populated saves in `Regions/` byte-exactly
+(bytes consumed == declared record size, zero failures) and cross-checking the `cSC4*` class
+registry in [sebamarynissen/sc4](https://github.com/sebamarynissen/sc4). What was wrong:
+`0x49C05B9F` is pipes, **not** the prebuilt network (that is `0x49C1A034`, which appears in no
+shipped save); `0x49C05C9F` and `0x49C05C8F` are lot decoration, not networks at all.
+
+| Type ID | Class | Bytes | Records | Identification | Confidence | OpenSC4 status |
+|---|---|---:|---:|---|---|---|
+| `0xC9C05C6E` | `cSC4NetworkOccupant` | 781,520 | 3,335 | Ground network occupants — one record per tile of road, street, avenue, one-way road, dirt road and rail | Verified | Implemented — `NetworkSubfile.gd`, rendered by `City.load_networks()` |
+| `0x6A0F82B2` | `cSC4TrafficNetworkMap` | 2,519,251 | 1 | Network index — city tile → network occupant, spanning every network subfile | Verified (header + reference table) | Implemented — `NetworkIndexSubfile.gd`; per-entry payload still undecoded, see below |
+| `0x49C05B9F` | `cSC4PipeOccupant` | 338,292 | 483 | **Water pipes** (was mislabelled "prebuilt network") | Verified | Implemented — `PipeSubfile.gd`, hidden underground layer |
+| `0x49C05C9F` | `cSC4LotRetainingWallOccupant` | 129,480 | 1,245 | **Lot retaining walls** (was mislabelled "pipe subfile") — lot decoration, not a network | Verified | Implemented — `LotStructureSubfile.gd` |
+| `0x49C05C8F` | `cSC4FoundationOccupant` | 205,820 | 2,510 | **Lot foundations** (was "unidentified ≈ subway?") — lot decoration, not a network | Verified | Implemented — `LotStructureSubfile.gd` |
+
+Two further network subfiles exist in the save format and were absent from this section. Neither
+occurs in Big City Tutorial, but both occur in other shipped saves:
+
+| Type ID | Class | Identification | OpenSC4 status |
+|---|---|---|---|
+| `0xC9C05C5D` | `cSC4PowerLineOccupant` | Power-line spans; 85-byte records naming the two pylons a span runs between, by memory address | Implemented — `PowerLineSubfile.gd` |
+| `0x09C05C6A` | `cSC4PowerPoleOccupant` | The pylons themselves; carry an Exemplar TGI and so an S3D model | Implemented — `PowerLineSubfile.gd` (head only; ~1.4 KB per-span tail undecoded) |
+| `0xCA16374F` | network subfile 2 | Bridge / elevated deck tiles. Only in `Timbuktu/City - Rush Hour Tutorial.sc4` (16 records) | Implemented — `BridgeNetworkSubfile.gd` (head only; ~390-byte tail incl. pillars undecoded) |
+| `0x49C1A034` | `cSC4NetworkOccupantWithPreBuiltModel` | The real prebuilt network (highway interchanges). **Present in no shipped save** | Not implemented, nothing to test against |
+| `0x8A4BD52B` | `cSC4NetworkTunnelOccupant` | Tunnels. **Present in no shipped save** | Not implemented, nothing to test against |
+
+**The key structural finding.** A ground-network record does not need the RUL tile-shape rules to
+be evaluated. SC4 resolved them when the tile was built and saved the answer: each record carries
+its four deck corners with position, texture coordinate and baked lighting colour, plus the
+already-chosen texture id. Rendering is therefore a direct read — which is why sloped roads,
+diagonals and level crossings came out right without touching `RULSubfile.gd`. Verified layout:
+
+```
+u32 size, u32 crc, u32 mem, u16 major(8), u16 minor(4)
+u16 zot, u8 ?, u8 appearance      (bit 0 = present in city, bit 6 = burnt)
+u32 0xC772BF98                    family marker, constant
+tract: u8 minX, minZ, maxX, maxZ, u16 xTractSize, zTractSize
+u32 sgpropCount + sgprops[]
+u32 GID, u32 TID, u32 IID         all zero on ground networks
+u8 ?
+f32 position x, y, z              metres, tile centre
+4 x vertex { f32 x,y,z,u,v; u8 r,g,b,a }        24 bytes each, odd-aligned
+u32 textureId                     FSH family; high byte = network family per RULSubfile.gd
+u8  wealthTexture
+u32 baseTexture                   FSH family for the sidewalk/ground underneath
+u8  orientation
+u8 x2 ?
+u8  crossingCount-1
+crossings[] { u8 networkType, west, north, east, south }
+u32 wallCount + walls[] { u32 texture, vertex }
+bbox: 6 f32 grouped BY AXIS (minX, maxX, minY, maxY, minZ, maxZ)
+u32 constructionStates, u32 alternatePathId, 3 x u32 ?, u64 demolishingCosts
+```
+
+`networkType`: 0 Road · 1 Rail · 2 Maxis El Highway · 3 Street · 4 Pipe · 5 Powerline ·
+6 Avenue · 7 Subway · 8 Light Rail · 9 Monorail · 10 One-Way Road · 11 Dirt Road.
+
+Textures resolve at TGI `(0x7AB50E44, 0x1ABE787D, textureId + zoom)` for zoom 0..4 — the same
+scheme `TransitTiles.gd` already used. All 36 distinct texture ids in Big City Tutorial resolve
+with all five zoom variants present.
+
+Foundations and retaining walls store a placement block that no community parser documents. It
+was decoded here as `f32 x, y, z, size_x, height, size_z` (metres), at record offset 0x38 for
+foundations and 0x48 for walls. Evidence: 100% of the 1,245 walls and 2,510 foundations in Big
+City Tutorial then have their centre on a lot-covered tile (the x/z transpose gives ~55%), and
+the median of `y − terrain altitude` is exactly 0.00 m. Their exemplars carry no model for most
+records — instead a five-entry list of FSH zoom variants plus the world size one repeat covers
+(`0x295961F2`/`0x295961F3` for walls, `0x68FCFF37`/`0xC911EDA0` for foundations), i.e. SC4
+stretches a texture over a box. A minority carry an RKT1 S3D model instead.
+
+**What is still undecoded.** The network index's per-entry payload: between consecutive
+`{tile_number, mem, subfile_type}` triples sits a variable-length block nobody has decoded, and
+SC4Parser's own attempt cannot keep the cursor aligned. `NetworkIndexSubfile.gd` resynchronises
+by scanning for the next triple instead, which recovers exactly the declared reference count in
+every populated save. What `tile_number` means is also open — it is not a row-major tile index
+(both that and its transpose match only about half the entries against the actual tile
+coordinates of the ground-network records).
 
 ### 4.5 Simulation grids (data views)
 
@@ -277,13 +358,20 @@ save's own COM-serializer registry (`0x499B23FE`) reports for that class.
 
 ## 5. What implementing the rest would unlock
 
-Ordered by likely value to OpenSC4:
+**Done — network subfiles (§4.4), 2026-08-06.** Ground networks, pipes, the network index, lot
+foundations and retaining walls all load and render, as do the power-line and bridge subfiles
+that appear in other saves. What it did *not* unlock, contrary to what the previous version of
+this list assumed: the `CityView/ClassDefinitions/` graph classes still have no input. A graph
+needs connectivity, and these subfiles carry only geometry — the connectivity lives in
+`SC4Path`, now item 1 below.
 
-1. **Network subfiles (§4.4)** — the city renders today with no roads, rails, power lines or
-   pipes. `0xC9C05C6E` (3,335 ground-network tile records) plus the network index is the
-   gateway to drawing the transport network, and the `CityView/ClassDefinitions/` graph
-   classes are already waiting for it. This save is a good first target: no bridges, no
-   tunnels.
+Remaining, ordered by likely value to OpenSC4:
+
+1. **`SC4Path` (`0x296678F7`)** — the per-tile vehicle paths. This is now the single missing
+   piece between "the network is drawn" and "the network is a graph": it would feed
+   `TransitTile.set_tile_paths()` (a stub returning `{}`) and thence `NetworkGraph`, and it is
+   the prerequisite for any traffic simulation or route display. Note it is a DAT type, not a
+   savegame type — the paths live in the game's own data files, keyed per network piece.
 2. **SimGrids (§4.5)** — the record header is fully decoded (this analysis parses all 136
    layers cleanly: own type id, dataId, resolution, dims at fixed offsets, 55-byte header).
    They power every data-view overlay (pollution, land value, crime, traffic…). A generic
@@ -305,15 +393,80 @@ Ordered by likely value to OpenSC4:
   `cSTETerrain__SaveAltitudes.gd`, `tools/dat_dump.py`.
 * **[SC4D Encyclopaedia](https://wiki.sc4devotion.com/index.php?title=Savegame)** (Savegame,
   Network Subfiles, Ordinance Subfiles pages) and **[SimsWiki SAVEGAMES](http://simswiki.info/wiki.php?title=SAVEGAMES)** —
-  both were **unreachable from this sandbox** (network policy blocks them, incl. via
-  web.archive.org); labels marked *Reported* came from search-result snippets quoting those
-  pages and should be re-checked against the live pages.
+  still **unreachable** as of 2026-08-06 (both return HTTP 403 to any client, browser
+  user-agent or not). Labels marked *Reported* came from search-result snippets quoting those
+  pages and should be re-checked if the sites ever come back.
 * **[Killeroo/SC4Parser](https://github.com/Killeroo/SC4Parser)** and
   **[sebamarynissen/sc4](https://github.com/sebamarynissen/sc4)** — community savegame
-  parsers whose type-ID constants back the *Documented* rows.
+  parsers. **Both ARE reachable** via `raw.githubusercontent.com`, which the 2026-07-23 pass
+  did not realise; fetching their source directly is how the §4.4 layouts were established.
+  `sc4`'s `src/core/cpp-classes.ts` in particular is a type-ID → `cSC4*` class-name registry
+  and is the fastest way to identify an unknown savegame type. Caveat: neither library is
+  authoritative. `SC4Parser`'s `NetworkTile1` mislabels the four 24-byte vertices as three
+  positions plus padding, and `sc4`'s bridge class documents a version-3 layout that does not
+  match the version-2.3 records in the shipped save. Treat both as leads to verify, not truth.
+
+**Standard of proof used in the 2026-08-06 revision.** A layout was only accepted when a parser
+written to it consumed exactly the declared record size for *every* record — not a sample — in
+*every* populated save (eight of them). Where that test cannot apply, an independent check was
+required: foundation and wall placement was confirmed by 100% of centres landing on lot-covered
+tiles and a median `y − terrain` of exactly 0.00 m; network-index recovery by the recovered
+reference count equalling the declared count in all eight cities.
 
 Anything marked *Unknown* here is, to the best of available community knowledge, genuinely
 undecoded — SC4's savegame has never been fully reverse-engineered.
+
+## 7. Session log — 2026-08-06
+
+Implementing §4.4. Recorded because several findings are not recoverable from the code alone.
+
+**Identifications corrected.** Three of §4.4's five type IDs were wrong and two subfiles were
+missing entirely; the table in §4.4 has the detail. The error to learn from: the 2026-07-23 pass
+inferred `0x49C05B9F`/`0x49C05C8F`/`0x49C05C9F` from *ID adjacency* — they sit in the same
+numeric family as known network types — and adjacency turned out to mean nothing. Two of the
+three are lot decoration. Record size and shape (700 vs 104 vs 82 bytes; presence of an Exemplar
+TGI) would have separated them immediately.
+
+**Newly decoded.**
+
+* Ground-network record layout, byte-exact — see §4.4. The load-bearing discovery is that SC4
+  saves the *resolved* tile: four vertices with position, UV and baked lighting colour, plus the
+  chosen texture id. The RUL tables never need to be evaluated to draw a saved city.
+* Foundation / retaining-wall placement block: `f32 x, y, z, size_x, height, size_z`.
+* Power lines are two cross-referencing subfiles, spans (`0xC9C05C5D`) and pylons
+  (`0x09C05C6A`), joined by memory address. Every span in all five cities that have them names
+  exactly two pylons and both resolve.
+* Pipes lie a **median 10.34 m below** the terrain surface (range −6.5 to −25.5 m across the 483
+  records). Consequence for rendering: they cannot be shown by making geometry visible, only by
+  an x-ray pass — see the engine notes below.
+
+**Still undecoded after this session.** The network index's per-entry payload and the meaning of
+its `tile_number`; the ~1.4 KB tail of a power-pole record; the ~390-byte tail of a bridge record
+(which holds pillar placement, so bridge pillars do not render); the `orientation` high bit set
+on 36 ground-network tiles, probably a diagonal-flip flag.
+
+**Engine-side findings worth keeping.** These bit during this work and are easy to hit again:
+
+* Network quads must clear the lot base textures, which sit at `0.015 + 0.004 * (priority & 7)`
+  — up to **0.043** world units. Anything lifted below that gets buried by a high-priority lot
+  apron, most visibly at intersections.
+* Per-tile quads whose UVs span the full 0..1 of their texture need `texture_repeat = false`.
+  With the default repeat, edge pixels filter against the texture's opposite edge and leave a
+  hairline seam along every tile boundary.
+* Do not put these quads in the transparent pass. `TRANSPARENCY_ALPHA` sorts per-object with no
+  depth write, which let lot aprons and the network's own base layer overdraw the road surface;
+  level-crossing tiles vanished entirely. `TRANSPARENCY_ALPHA_SCISSOR` keeps them in the opaque
+  pass where depth sorting is real.
+* The water shader in `City.tscn` computed `NORMAL` as
+  `PROJECTION_MATRIX * VIEW_MATRIX * MODEL_MATRIX * vec4(noisenormal, 0)`. Godot wants NORMAL in
+  view space and a projection matrix is not a valid transform for a direction; the diffuse term
+  collapsed and all water rendered black with only the additive wave highlights showing. Fixed
+  by dropping `PROJECTION_MATRIX`. Unrelated to networks, but it had been masking the map's
+  water since before this work — a "floating terrain fragment" beyond the map edge turned out to
+  be ordinary land across a bay of invisible water.
+* Water tint still comes from a single texel: `texture(watertexture, vec3(vec2(0.0, 0.0), zoom))`
+  paints the whole ocean with the top-left pixel of a 256×256 texture. Sampling with real UVs is
+  a one-line change nobody has made yet.
 
 ## Appendix A — SimGrid layer inventory (dataIds)
 

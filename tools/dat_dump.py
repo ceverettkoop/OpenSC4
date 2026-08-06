@@ -38,7 +38,20 @@ KNOWN = {
     0x2977AA47: "Prop subfile",
     0xA9C05C85: "Flora subfile",
     0xC9BD5D4A: "Lot subfile",
-    0x6A0F82B2: "Network subfile",
+    0xC97F987C: "Lot base-texture subfile",
+    # network family. Identities cross-checked against the cSC4* class registry
+    # in sebamarynissen/sc4 and confirmed against real saves -- note that
+    # 0x49C05B9F is pipes, NOT the prebuilt network (which is 0x49C1A034 and
+    # appears in none of the shipped saves).
+    0xC9C05C6E: "Network subfile (ground)",
+    0x49C05B9F: "Pipe subfile",
+    0xC9C05C5D: "Power line subfile",
+    0xCA16374F: "Bridge network subfile",
+    0x8A4BD52B: "Tunnel network subfile",
+    0x49C1A034: "Prebuilt network subfile",
+    0x49C05C9F: "Lot retaining wall subfile",
+    0x49C05C8F: "Lot foundation subfile",
+    0x6A0F82B2: "Network index subfile",
 }
 
 DBDF_TYPE = 0xE86B1EEF

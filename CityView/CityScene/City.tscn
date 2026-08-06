@@ -112,7 +112,11 @@ void fragment(){
 	noisenormal += (normalize(vec3(normal_horizontal*(2.0*(noise_tex.g)-1.0), normal_vertical*(2.0*(noise_tex.b)-1.0), normal_horizontal*(2.0*(noise_tex.r)-1.0))) * n_val2.b);
 	noise_tex = texture(noise_normals, mod(n_val3.rg/1024.0, 1.0));// * vec4(2.0, 2.0, 1.0, 1.0) - vec4(1.0, 1.0, 0.0, 0.0);
 	noisenormal -= (normalize(vec3(normal_horizontal*(2.0*sqrt(noise_tex.r)-1.0), normal_vertical*(2.0*sqrt(noise_tex.b)-1.0), normal_horizontal*(2.0*sqrt(noise_tex.g)-1.0))) * n_val3.b);
-	NORMAL = normalize((PROJECTION_MATRIX * VIEW_MATRIX * MODEL_MATRIX * vec4(normalize(noisenormal), 0.0)).rgb);
+	// Godot wants NORMAL in VIEW space. Putting PROJECTION_MATRIX in this chain
+	// is not a valid transform for a direction -- it produced a meaningless
+	// normal, so the diffuse term collapsed to zero and the water rendered
+	// black with only the additive wave highlights showing through.
+	NORMAL = normalize((VIEW_MATRIX * MODEL_MATRIX * vec4(normalize(noisenormal), 0.0)).xyz);
 	vec3 break_col = vec3(0.0);
 	if (noisenormal.y/3.0 < open_wave_threshold){
 		break_col = vec3((open_wave_threshold - noisenormal.y/3.0)*open_wave_str);

@@ -44,6 +44,23 @@ var type_dict_to_text = {
     0xaa5c3144: "Cursor",
     0xa2e3d533: "KeyCursor",
     0x296678f7: "SC4Path",
+    # City-save subfiles. These are parsed by class (see City.gd's
+    # indices_by_type lookups), not through class_dict -- the names here are
+    # what the DAT Explorer shows when browsing a .sc4.
+    0xa9bd882d: "Building subfile",
+    0x2977aa47: "Prop subfile",
+    0xa9c05c85: "Flora subfile",
+    0xc9bd5d4a: "Lot subfile",
+    0xc97f987c: "Lot base-texture subfile",
+    0xc9c05c6e: "Network subfile",
+    0x49c05b9f: "Pipe subfile",
+    0xc9c05c5d: "Power line subfile",
+    0xca16374f: "Bridge network subfile",
+    0x8a4bd52b: "Tunnel network subfile",
+    0x49c1a034: "Prebuilt network subfile",
+    0x49c05c9f: "Lot retaining wall subfile",
+    0x49c05c8f: "Lot foundation subfile",
+    0x6a0f82b2: "Network index subfile",
 }
 
 # This dictionary should actually be a dictionary of dictionaries (type -> group)

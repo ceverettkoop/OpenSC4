@@ -37,6 +37,14 @@ func _input(event):
     if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F:
         _toggle_free()
         return
+    # U toggles the underground view: the water pipes lie ~10 m below grade, so
+    # they are drawn as an x-ray overlay through the terrain rather than buried.
+    if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_U:
+        var city = get_parent()
+        if city.has_method("toggle_underground_view"):
+            var on = city.toggle_underground_view()
+            Log.info("Underground view %s" % ("on" if on else "off"))
+        return
     if free_mode:
         _free_input(event)
         return
