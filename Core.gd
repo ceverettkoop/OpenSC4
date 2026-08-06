@@ -139,6 +139,7 @@ var type_dict = {
     "LUA": 0xca63e2a3,
     "DBDF": 0xe86b1eef,
     "TEXT": 0x00000000,
+    "SC4Path": 0x296678f7,
 }
 var group_dict = {
     "VIDEO,BW_CURSOR": 0x00000001,
@@ -193,7 +194,8 @@ var class_dict = {
     "PNG": ImageSubfile,
     "LUA": null,
     "DBDF": DBPFSubfile,
-    "TEXT": null
+    "TEXT": null,
+    "SC4Path": SC4PathSubfile,
 }
 
 func _type_int_2_str(dict, number:int) -> String:

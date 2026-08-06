@@ -68,6 +68,11 @@ func _ready():
         push_error("City script not attached (compile error?) -- aborting")
         get_tree().quit(1)
         return
+    if not _check_network(city):
+        push_error("NETWORK CHECKS FAILED")
+        get_tree().quit(1)
+        return
+
     print("City ready, sweeping building views")
     for zoom in range(1, 7):
         for rot in range(4):
@@ -78,3 +83,80 @@ func _ready():
         city.set_building_view(3, 2, r)
     print("SWEEP COMPLETE")
     get_tree().quit()
+
+# Checks the tile model against the save it was built from. These are the
+# invariants the whole network graph rests on, so they are assertions rather
+# than log lines: if the rotation convention or the piece linkage ever breaks,
+# the city still renders and only these numbers move.
+#
+# Both shipped saves score 100% piece coverage and 100% edge agreement once
+# avenues are set aside -- they are one network two tiles wide, so a single
+# tile's paths and its own edge codes describe different things. The floor sits
+# just under 100% rather than at it so a single odd tile in some other city
+# reports rather than fails the run.
+const MIN_EDGE_AGREEMENT : float = 0.99
+
+func _check_network(city) -> bool:
+    print("\n--- network model checks ---")
+    var model = city.network_model
+    if model == null:
+        # A city with no roads at all is legitimate; nothing to check.
+        if city.save_network_tiles.is_empty():
+            print("  city has no network subfile, skipping")
+            return true
+        push_error("network subfile present but no model was built")
+        return false
+
+    var ok := true
+    var present := 0
+    for tile in city.save_network_tiles:
+        if tile.is_present():
+            present += 1
+    if model.size() == present:
+        print("  ok    model holds every present save tile: %d" % present)
+    else:
+        push_error("model has %d tiles, save has %d present" % [model.size(), present])
+        ok = false
+
+    # Only tiles that connect to something can contribute an arc, so only those
+    # need a path. Getting Started Tutorial's entire network is a single orphan
+    # street tile with no connections at all.
+    var unresolved = model.unresolved_pieces()
+    if unresolved["connected"].is_empty():
+        print("  ok    every connected piece resolved to an SC4Path")
+    else:
+        push_error("connected pieces with no SC4Path: %s" % unresolved["connected"])
+        ok = false
+    if not unresolved["inert"].is_empty():
+        print("  note  %d unconnected piece(s) with no path: %s"
+            % [unresolved["inert"].size(), unresolved["inert"]])
+
+    var orient = model.orientation_report()
+    if orient["checked"] == 0:
+        # Nothing comparable: every tile was an avenue, or had no path at all.
+        print("  note  no tiles to check edge agreement against")
+    else:
+        var rate : float = float(orient["agreed"]) / float(orient["checked"])
+        if rate >= MIN_EDGE_AGREEMENT:
+            print("  ok    path/save edge agreement: %.1f%% of %d tiles (%d avenues deferred)"
+                % [rate * 100.0, orient["checked"], orient["deferred"]])
+        else:
+            push_error("path/save edge agreement %.1f%% is below the %.0f%% floor"
+                % [rate * 100.0, MIN_EDGE_AGREEMENT * 100.0])
+            ok = false
+
+    # Every tile the model holds must sit inside the map, or a coordinate
+    # convention is inverted somewhere.
+    var tiles_w = city.size_w * 64
+    var tiles_h = city.size_h * 64
+    var out_of_bounds := 0
+    for cell in model.tiles.keys():
+        if cell.x < 0 or cell.y < 0 or cell.x >= tiles_w or cell.y >= tiles_h:
+            out_of_bounds += 1
+    if out_of_bounds == 0:
+        print("  ok    all cells within the %dx%d map" % [tiles_w, tiles_h])
+    else:
+        push_error("%d cells fall outside the map" % out_of_bounds)
+        ok = false
+
+    return ok

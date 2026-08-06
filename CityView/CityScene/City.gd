@@ -515,8 +515,15 @@ func _lot_texture(family_iid : int) -> Variant:
     return null
 
 # Parsed ground-network tiles (roads, streets, avenues, rail...). Each record
-# carries its own finished quad, so rendering reads straight from here.
-var network_tiles : Array = []
+# carries its own finished quad, so rendering reads straight from here. This is
+# the raw save data; the tile-keyed view everything else should ask is
+# `network_model` below.
+var save_network_tiles : Array = []
+
+# The authoritative tile map, seeded from the save and mutated by the build
+# tool. Anything that needs to know what is where -- the graph, the renderer,
+# the tool -- goes through this rather than the raw arrays.
+var network_model : NetworkModel = null
 
 # FSH group holding network surface textures; instance = family + zoom 0..4.
 # Same group the interactive build tool uses (TransitTiles.gd).
@@ -544,9 +551,37 @@ func load_networks():
         return
     var idx = nindex[0]
     var nsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, NetworkSubfile)
-    network_tiles = nsub.tiles
+    save_network_tiles = nsub.tiles
     Log.info("Network subfile: %d tiles, %d layout failures, types %s"
-        % [network_tiles.size(), nsub.layout_failures, nsub.type_histogram()])
+        % [save_network_tiles.size(), nsub.layout_failures, nsub.type_histogram()])
+
+    # Seed the tile map before drawing, so anything listening for
+    # tiles_changed is populated by the time the meshes exist.
+    network_model = NetworkModel.new()
+    network_model.seed_from_save(save_network_tiles)
+    Log.info("Network model: %d tiles, types %s"
+        % [network_model.size(), network_model.type_histogram()])
+    var unresolved = network_model.unresolved_pieces()
+    if unresolved["connected"].is_empty():
+        Log.info("Every connected network piece resolved to an SC4Path file")
+    else:
+        Log.warn("Connected network pieces with no SC4Path: %s" % unresolved["connected"])
+    if not unresolved["inert"].is_empty():
+        Log.info("Network pieces with no path and no connections (inert): %s" % unresolved["inert"])
+    var orient = network_model.orientation_report()
+    var rate = 100.0 * orient["agreed"] / max(1, orient["checked"])
+    Log.info("Path/save edge agreement: %d of %d tiles (%.1f%%), %d deferred as 2-tile networks, %d without a path"
+        % [orient["agreed"], orient["checked"], rate, orient["deferred"], orient["no_path"]])
+    if not orient["mismatches"].is_empty():
+        # Grouped so the residual stays diagnosable rather than just being a
+        # number that drifts. Expect these to be avenue medians (edge code 4,
+        # a shared centre lane the path file does not describe) and diagonals.
+        var by_piece = {}
+        for m in orient["mismatches"]:
+            by_piece[m["piece_id"]] = by_piece.get(m["piece_id"], 0) + 1
+        Log.info("  %d disagreeing tiles over %d pieces; worst: %s"
+            % [orient["mismatches"].size(), by_piece.size(),
+               _top_mismatches(orient["mismatches"], by_piece)])
 
     var root = Node3D.new()
     root.name = "Networks"
@@ -555,7 +590,7 @@ func load_networks():
     # Batch by (texture family, layer) so each family is one mesh + one material.
     var by_family = {}
     var drawn = 0
-    for tile in network_tiles:
+    for tile in save_network_tiles:
         if not tile.is_present():
             continue
         drawn += 1
@@ -604,6 +639,22 @@ func load_networks():
         % [drawn, by_family.size(), missing.size()])
     if not missing.is_empty():
         Log.warn("load_networks: texture families missing from the DATs: %s" % missing)
+
+# One line per disagreeing piece: what the paths claim vs what the save says.
+func _top_mismatches(mismatches : Array, by_piece : Dictionary) -> String:
+    var example = {}
+    for m in mismatches:
+        if not example.has(m["piece_id"]):
+            example[m["piece_id"]] = m
+    var pieces = by_piece.keys()
+    pieces.sort_custom(func(a, b): return by_piece[a] > by_piece[b])
+    var parts : Array = []
+    for iid in pieces.slice(0, 4):
+        var m = example[iid]
+        parts.append("%08X x%d (orient %02X, %d crossings, paths %s vs save %s)"
+            % [iid, by_piece[iid], m["orientation"], m["crossings"],
+               m["from_paths"], m["from_save"]])
+    return ", ".join(parts)
 
 # Reads the bridge/elevated subfile and adds its decks to the network batches.
 # Returns how many tiles were queued.

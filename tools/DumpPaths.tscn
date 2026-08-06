@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://dumppaths1"]
+
+[ext_resource type="Script" path="res://tools/dump_paths.gd" id="1"]
+
+[node name="DumpPaths" type="Node"]
+script = ExtResource("1")

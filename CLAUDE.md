@@ -26,8 +26,15 @@ OpenSC4 is an open-source **Godot 4.7 (GDScript)** reimplementation of *SimCity 
   — should reach the log line `DBPF files loaded` with zero SCRIPT ERRORs.
 - City-load harness (headless): `godot --headless --path . res://tools/HeadlessCity.tscn`
   `[-- "<region>" "<city name>"]` (default Timbuktu / Big City Tutorial). Loads the DATs +
-  a real save, builds terrain/buildings, sweeps all building view variants; a clean run
-  ends with `SWEEP COMPLETE`.
+  a real save, builds terrain/buildings, asserts the network-model invariants, then sweeps
+  all building view variants; a clean run ends with `SWEEP COMPLETE`. It **exits 1** if a
+  network check fails, so it is usable as a regression gate.
+- SC4Path parser harness (headless): `godot --headless --path . res://tools/DumpPaths.tscn`
+  — parses all 3,411 path records and asserts the version/class/stop-type counts and the
+  placement transforms; ends with `PATH DUMP COMPLETE`.
+- Harnesses must be **scenes, not `-s` scripts**: a `--script` main loop cannot compile
+  scripts that reference the `Core`/`Log` autoloads. `godot --check-only` fails for the same
+  reason, so `--import` is the compile check.
 - Visual harness (windowed): `godot --path . --resolution 1600x900
   res://tools/ScreenshotCity.tscn -- <out_dir> ["<region>" "<city name>"]` — same load
   path, then saves `city_zoom1.png` (whole map) and `city_zoom4.png` (map centre,
@@ -76,8 +83,19 @@ Everything flows through this singleton.
 - Parser subclasses (all `extends DBPFSubfile`): `ExemplarSubfile` (EQZB property files;
   key descriptions from `exemplar_types.dict`), `FSHSubfile` (textures), `S3DSubfile`
   (3D models), `ATCSubfile`/`AVPSubfile` (2D sprite props — see below), `LTEXTSubfile`
-  (UTF-16 strings), `ImageSubfile` (PNG), `RULSubfile` (network rules), `CURSubfile`
-  (cursors), `INISubfile`.
+  (UTF-16 strings), `ImageSubfile` (PNG), `RULSubfile` (network rules), `SC4PathSubfile`
+  (vehicle paths — see below), `CURSubfile` (cursors), `INISubfile`.
+- **SC4Path (0x296678F7)** — a **plain text** format (CRLF), and the network's connectivity.
+  One file per network *piece*: which lanes cross that tile, which edge each enters and
+  leaves by (0..3 WNES, 255 = ends inside the tile), and for which class (1 Car, 2 Sim,
+  3 Train, 4 Subway, 6 ElTrain, 7 Monorail). Ground pieces are group 0x69668828 keyed by the
+  FSH texture id — i.e. `NetworkSubfile.NetworkTile.texture_id`; elevated/highway pieces are
+  group 0xA966883F keyed by S3D id. Coordinates are tile-local metres, **(east, north, up)**
+  — the *third* component is height — and **north is -z** in the world frame. The parser
+  stores them raw and exposes `transform_dir`/`transform_local`/`to_world` as statics,
+  because one piece is shared by many tiles at different orientations and `DBPF.get_subfile()`
+  caches one instance per TGI. Full format notes and the measurements behind the orientation
+  handling are in `dev_notes/save_file_analysis` §9.
 - **2D sprite props.** Some props have no S3D model at all: traffic lights, the animated
   balloons, the exploratorium crowd. Their exemplar's `ResourceKeyType0` points at an
   `ATCSubfile` (0x29A5D1EC) — a 48-byte header naming an FSH sprite sheet plus one
@@ -109,8 +127,16 @@ Everything flows through this singleton.
 - **City view** (`CityView/CityScene/City.gd`, `City.tscn`): builds a 3D terrain `ArrayMesh`
   from the `cSTETerrain__SaveAltitudes` heightmap (or a `FastNoiseLite` fallback), textures
   from FSH via `Texture2DArray` + a terrain shader (`CityView/Meshes/Terrain.gd`), a water
-  plane (`CityView/Meshes/WaterPlane.gd`), and an S3D model demo. `CityView/ClassDefinitions/`
-  holds the (future) transit network graph model (`NetGraphNode`, `NetGraphEdge`, etc.).
+  plane (`CityView/Meshes/WaterPlane.gd`), and an S3D model demo.
+- **Transport network** (`CityView/Network/`): `NetworkModel.gd` is the authoritative
+  `Vector2i -> Tile` map of what network sits where. It is seeded from the save in
+  `City.load_networks()` and is the single choke point for mutation (`place`/`remove`/`undo`,
+  each returning and emitting the dirty cell set), so the renderer and the graph cannot drift
+  apart. Note a tile's connected edges are the **union of all `crossings` entries**, not just
+  `crossings[0]` — a level crossing puts its second network in `crossings[1..]`. Avenues are
+  one network two tiles wide and are handled as a special case throughout.
+  `CityView/ClassDefinitions/` still holds the older, unwired graph sketches (`NetGraphNode`,
+  `NetGraphEdge`, `NeworkGraph.gd` — note the typo; it is dead and broken).
 - **DAT Explorer** (`DATExplorer/`): a `Tree` browser over loaded DBPF archives with TGI
   filters and subfile previews. Dev tool.
 

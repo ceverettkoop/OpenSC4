@@ -372,21 +372,21 @@ foundations and retaining walls all load and render, as do the power-line and br
 that appear in other saves. What it did *not* unlock, contrary to what the previous version of
 this list assumed: the `CityView/ClassDefinitions/` graph classes still have no input. A graph
 needs connectivity, and these subfiles carry only geometry — the connectivity lives in
-`SC4Path`, now item 1 below.
+`SC4Path`, since decoded (§9).
 
 **Done — 2D sprite props (§8), 2026-08-06.** Every prop occupant in this save that has artwork
 in the DATs now draws. What remains on the prop side is not a format gap: 2,339 occupants name
 an S3D model whose zoom/rotation variant is missing from the six DATs the loader opens, which is
 a question of *which files we load*, not of parsing.
 
+**Done — `SC4Path` (`0x296678F7`), 2026-08-06.** Parsed by `addons/dbpf/SC4PathSubfile.gd`; see
+§9 below for the format. This was the connectivity the network subfiles lacked. Every network
+tile of every populated shipped city now resolves to a path file, and the tile-keyed model that
+consumes them is `CityView/Network/NetworkModel.gd`.
+
 Remaining, ordered by likely value to OpenSC4:
 
-1. **`SC4Path` (`0x296678F7`)** — the per-tile vehicle paths. This is now the single missing
-   piece between "the network is drawn" and "the network is a graph": it would feed
-   `TransitTile.set_tile_paths()` (a stub returning `{}`) and thence `NetworkGraph`, and it is
-   the prerequisite for any traffic simulation or route display. Note it is a DAT type, not a
-   savegame type — the paths live in the game's own data files, keyed per network piece.
-2. **SimGrids (§4.5)** — the record header is fully decoded (this analysis parses all 136
+1. **SimGrids (§4.5)** — the record header is fully decoded (this analysis parses all 136
    layers cleanly: own type id, dataId, resolution, dims at fixed offsets, 55-byte header).
    They power every data-view overlay (pollution, land value, crime, traffic…). A generic
    `SimGridSubfile` would be a small, high-leverage parser.
@@ -584,6 +584,104 @@ its own AVPs and FSH) that was not investigated.
 0.7 s and the crowd at 1.0 s per frame — plausible, unverified); AVP header u32s 2 and 3, always
 `1`; the second stoplight ATC at `0x2B2D0000`; and whether SC4 ever drives a sprite's frame from
 simulation state, which is what real red/amber/green cycling would require.
+
+## 9. Session log — 2026-08-06 (third pass): SC4Path, the network's connectivity
+
+`SC4Path` (`0x296678F7`) is a **DAT** type, not a savegame type, and it is what turns a drawn
+network into a graph. Each file describes one network *piece*: which lanes run through that tile,
+which edge each lane enters and leaves by, and for which kind of traveller. One-way roads, banned
+turns and the two carriageways of an avenue are encoded here and nowhere else.
+
+Parser: `addons/dbpf/SC4PathSubfile.gd`. Harness: `godot --headless --path .
+res://tools/DumpPaths.tscn` (ends `PATH DUMP COMPLETE`).
+
+**Where they live.** All 3,411 records are in `SimCity_1.dat`, in two groups already named in
+`Core.gd`:
+
+| Group | Count | Keyed by |
+|---|---:|---|
+| `0x69668828` `TEXTURED_NETWORK_PATH` | 340 | the FSH network texture id — ground networks |
+| `0xA966883F` `3D_NETWORK_PATH` | 3,071 | an S3D model id — elevated/highway pieces |
+
+**Linkage.** A ground tile's path file is `NetworkSubfile.NetworkTile.texture_id` looked up in
+`0x69668828`. Every connected ground tile of all nine populated shipped cities resolves — 9,166
+tiles. (Only 546 of the 5,350 network texture families have a path at all; most textures are not
+connected ground pieces. `Getting Started Tutorial`'s entire network is one orphan street tile,
+piece `0x00000100`, with all four edge codes zero and no path — inert, and correctly so.)
+
+**Format.** Plain ASCII text, CRLF. 210 files (all in the 3D group) declare zero paths and are
+just the five header lines.
+
+```
+SC4PATHS
+<version>            "1.0" (160 files) | "1.1" (378) | "1.2" (2873)
+<numPaths>
+<numStopPaths>       1.1 and 1.2 ONLY -- the line is absent in 1.0
+<terrainVariance>    0 or 1
+
+numPaths path records:
+    -- <name>        optional comment, e.g. "car_a_3_2", "Train_b_1_3_J"
+    <class>          1 Car, 2 Sim (pedestrian), 3 Train, 4 Subway, 6 ElTrain, 7 Monorail
+    <pathIndex>      distinguishes parallel lanes (the _a/_b/_c in the name)
+    <entry>          0..3 WNES, or 255 for "terminates inside the tile"
+    <exit>
+    <junctionFlag>   1.2 ONLY
+    <numCoords>
+    numCoords lines of "x,y,z"
+
+numStopPaths stop records -- SAME five fields in both 1.1 and 1.2, then ONE coord:
+    -- <name>        optional, e.g. "Stop_Train_a_3_1", "StopUK_Train_a_3_1"
+    <stopType>       1 normal, 2 UK / left-hand drive
+    <class> <pathIndex> <entry> <exit>
+    one "x,y,z" line
+```
+
+The class enum was read off the files' own comment names rather than guessed: class 1 always names
+itself `car*`, 2 `sim*`, 3 `train*`, 4 `subway` (439/439), 6 `eltrain*`, 7 `mono*`. Class 5 never
+occurs. `junctionFlag == 1` agreed with a `_J` name suffix on 1840/1840 v1.2 records.
+
+Counts, which the harness asserts: versions `{1.0: 160, 1.1: 378, 1.2: 2873}`; classes
+`{Car: 10567, Sim: 1702, Train: 486, Subway: 439, ElTrain: 198, Monorail: 190}`; stop types
+`{1: 2105, 2: 543}`.
+
+**Coordinates.** Tile-local metres spanning -8..+8, and the triple is **(east, north, up)** — the
+*third* component is height, not the second. `entry`/`exit` use the same 0..3 WNES ordering as
+`RULSubfile.gd`'s keys and `NetworkSubfile`'s crossings, so no translation is needed. **North is
+-z** in the project's world frame: over all 3,335 tiles of Big City Tutorial, W=-x/N=-z/E=+x/S=+z
+scores 6831 hits against 9 misses, versus 6309/531 for north as +z. Hence
+`world = (tx + 0.5 + x/16, base_h + z/16, tz + 0.5 - y/16)`.
+
+**Placement.** A piece is shared by many tiles at different orientations, and `DBPF.get_subfile()`
+caches one parsed subfile per TGI — Big City Tutorial's 3,335 tiles share just 36 path files — so
+the parser stores raw coordinates and never rotates. The transforms are statics on the class.
+
+The `orientation` byte's `0x80` bit mirrors the piece about **x** (west and east swap) and applies
+**after** the quarter turns. The two do not commute. Scored against the edges the saves themselves
+declare, the four candidate compositions give:
+
+| composition | Big City Tutorial |
+|---|---:|
+| **`flip_x(rot(side))`** | **3335/3335 = 100.00%** |
+| `rot(flip_x(side))` | 3318/3335 = 99.49% |
+| `rot(flip_y(side))` | 3311/3335 = 99.28% |
+| `flip_y(rot(side))` | 3294/3335 = 98.77% |
+
+Each wrong order fails on a *different* subset of rotations, so it reads as scattered noise rather
+than a systematic error — worth knowing if this is ever re-derived.
+
+**Two things that are not bugs.** Reading only `crossings[0]` is not enough: a level crossing puts
+its second network's edges in `crossings[1..]`, and ignoring them drops agreement to ~94%. Union
+them. And avenues never match: an avenue is one network *two tiles wide*, so a tile's path file
+describes lanes crossing into its partner while its WNES carries edge code `4`, the shared-median
+code. Of the differing sides, 20 were save-only with code 4 and 6 path-only, all avenue. They are
+counted separately, not as errors.
+
+**Result.** With the union and the correct flip order, path/save edge agreement is **100.00% over
+all 9,166 tiles of the nine populated shipped cities**, with 170 avenue tiles deferred.
+
+**Still open.** The 3D group (3,071 records, elevated and highway pieces) parses but nothing
+consumes it yet; bridges come through `BridgeNetworkSubfile.gd`, whose tail is still undecoded.
+Stop records are parsed but unused — they are where transit stations and signals attach.
 
 ## Appendix A — SimGrid layer inventory (dataIds)
 
