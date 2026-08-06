@@ -75,8 +75,15 @@ Everything flows through this singleton.
   performance-sensitive).
 - Parser subclasses (all `extends DBPFSubfile`): `ExemplarSubfile` (EQZB property files;
   key descriptions from `exemplar_types.dict`), `FSHSubfile` (textures), `S3DSubfile`
-  (3D models), `LTEXTSubfile` (UTF-16 strings), `ImageSubfile` (PNG), `RULSubfile` (network
-  rules), `CURSubfile` (cursors), `INISubfile`.
+  (3D models), `ATCSubfile`/`AVPSubfile` (2D sprite props — see below), `LTEXTSubfile`
+  (UTF-16 strings), `ImageSubfile` (PNG), `RULSubfile` (network rules), `CURSubfile`
+  (cursors), `INISubfile`.
+- **2D sprite props.** Some props have no S3D model at all: traffic lights, the animated
+  balloons, the exploratorium crowd. Their exemplar's `ResourceKeyType0` points at an
+  `ATCSubfile` (0x29A5D1EC) — a 48-byte header naming an FSH sprite sheet plus one
+  `AVPSubfile` (0x09ADCD75) frame table per zoom 0..4. Each AVP frame names a sheet page,
+  a pixel rectangle and an anchor pixel. `City.gd`'s "2D (sprite) props" section turns a
+  frame into a camera-facing billboard quad (`_place_sprite`, `_resolve_sprite`).
 - City-save subfile parsers (occupants placed in a city): `BuildingSubfile` (0xA9BD882D),
   `PropSubfile` (0x2977AA47) and `FloraSubfile` (0xA9C05C85) share one record family
   (Exemplar TGI marker + LE float bbox/position + orientation); `LotBaseTextureSubfile`

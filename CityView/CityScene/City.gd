@@ -1048,11 +1048,17 @@ func _draw_power_spans(sub : PowerLineSubfile):
 # the impostor mesh itself would break the fixed-camera illusion).
 func _place_occupants(recs : Array, what : String):
     var placed = 0
+    var sprites = 0
     var no_model = 0
     for rec in recs:
         var ref = _model_ref_for_exemplar(rec.exemplar_tgi)
         if ref == null:
-            no_model += 1
+            # No 3D model: the occupant may still be one of SC4's 2D sprite
+            # props (see the "2D (sprite) props" section below).
+            if _place_sprite(rec):
+                sprites += 1
+            else:
+                no_model += 1
             continue
         var vrot = posmod(current_s3d_rot + ROT_SIGN * rec.orientation, 4)
         var model = _resolve_model(ref, current_s3d_zoom, vrot)
@@ -1070,7 +1076,8 @@ func _place_occupants(recs : Array, what : String):
         mi.position = Vector3(x, _height_at(x, z), z)
         building_root.add_child(mi)
         placed += 1
-    Log.info("Placed %d %s (%d without a resolvable model)" % [placed, what, no_model])
+    Log.info("Placed %d %s, %d as 2D sprites (%d without a resolvable model)"
+        % [placed, what, sprites, no_model])
 
 # SC4 building models are referenced via ResourceKeyType1 (RKT1, exemplar property
 # 0x27812821): the stored instance id is a BASE, and the real S3D models fan out as
@@ -1142,11 +1149,289 @@ func _resolve_model(ref : Dictionary, s3d_zoom : int, rot : int) -> Variant:
         return built
     return null
 
+# --- 2D (sprite) props -------------------------------------------------------
+#
+# A minority of SC4 props have no S3D impostor at all. Their exemplar carries a
+# ResourceKeyType0 pointing at an ATC animation header (ATCSubfile.gd) instead,
+# and SC4 draws them by blitting pre-rendered sprites into the isometric view --
+# traffic lights (by far the most common: 362 of them in the tutorial city),
+# the animated roof balloons, the exploratorium.
+#
+# We reproduce that as a camera-facing billboard quad carrying the frame's
+# pixels, scaled so it covers exactly the screen area the sprite was authored
+# for and offset so the frame's anchor pixel sits on the prop's world position.
+#
+# Exemplar property: true when the frames are indexed by state rather than
+# played over time. Every traffic light sets it, and its four frames are the
+# four view rotations of the pole -- the sprite equivalent of an S3D model's
+# four baked rotation variants.
+const STATES_AS_FRAMES_PROP : int = 0x4a70d491
+
+# Sprite pixels per world unit (one 16 m tile) at appearance zoom 0..4.
+#
+# Measured from the game's own data rather than assumed: SC4's sprites and its
+# S3D impostor textures come out of the same pre-renderer, and an S3D model ties
+# world coordinates to texture pixels directly. Least-squares fitting
+# (vertex position -> UV * texture size) over ~700 building models per zoom
+# yields the world->screen-pixel matrix; the numbers below are its row norms
+# (both rows agree to <0.1%, i.e. the projection is conformal in the camera
+# plane, which is what lets a single scalar scale a billboard). The same fit
+# recovers azimuth 67.5 deg and the per-zoom elevations that CameraAnchor3D
+# already uses, so our camera and this art share one projection.
+const SPRITE_PX_PER_TILE := [6.449, 12.576, 24.965, 56.170, 112.147]
+
+# Frame advance for time-animated (non state-indexed) sprites: the ATC's rate
+# field is read as a count of 1/30 s ticks per frame. The unit is an assumption
+# -- rate is 21 for the balloons and 31 for the exploratorium, which lands both
+# near one frame per second.
+const SPRITE_TICK_HZ : float = 30.0
+
+var sprite_root : Node3D
+# Sprites whose frames advance with time (i.e. not STATES_AS_FRAMES_PROP and
+# with more than one frame). Kept apart so _process can skip the static ones.
+var animated_sprites : Array = []
+var sprite_clock : float = 0.0
+# ATC TGI string -> {"atc": ATCSubfile, "avp": [AVPSubfile or null per zoom]},
+# or null for exemplars whose animation could not be loaded.
+var sprite_anim_cache = {}
+# "<atc tgi>|<zoom>|<frame>" -> ArrayMesh ready to instance, or null if the
+# frame could not be built (missing page, out-of-bounds rectangle).
+var sprite_mesh_cache = {}
+# "<fsh tgi>|<page>" -> decompressed RGBA8 Image of one sprite-sheet page.
+var sprite_page_cache = {}
+
+# The first ATC reference of an exemplar, tagged with whether its frames are
+# states, or null if this exemplar is not a sprite prop.
+func _sprite_ref_for_exemplar(exemplar_tgi : Array) -> Variant:
+    if not Core.subfile_indices.has(SubfileTGI.TGI2str(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2])):
+        return null
+    var exemplar = Core.subfile(exemplar_tgi[0], exemplar_tgi[1], exemplar_tgi[2], ExemplarSubfile)
+    var refs = exemplar.get_all_sprite_refs()
+    if refs.is_empty():
+        return null
+    var ref : Dictionary = refs[0]
+    ref["states_as_frames"] = exemplar.properties.get(STATES_AS_FRAMES_PROP, false) == true
+    return ref
+
+# Instances one occupant record as a sprite billboard. Returns false (leaving
+# nothing in the scene) if the record is not a sprite prop or its frames are
+# unavailable, so the caller can go on counting it as unresolvable.
+func _place_sprite(rec) -> bool:
+    var ref = _sprite_ref_for_exemplar(rec.exemplar_tgi)
+    if ref == null:
+        return false
+    var anim = _sprite_anim(ref["tgi"])
+    if anim == null:
+        return false
+    var frame = _sprite_frame(ref, rec.orientation, current_s3d_rot, 0)
+    var mesh = _resolve_sprite(anim, current_s3d_zoom, frame)
+    if mesh == null:
+        return false
+    if sprite_root == null:
+        sprite_root = Node3D.new()
+        sprite_root.name = "PropSprites"
+        $Node3D.add_child(sprite_root)
+    var mi = MeshInstance3D.new()
+    mi.mesh = mesh
+    mi.visible = _sprite_visible_at(anim, current_s3d_zoom)
+    mi.set_meta("sprite_ref", ref)
+    mi.set_meta("orientation", rec.orientation)
+    var x = rec.pos_x / TILE_SIZE
+    var z = rec.pos_z / TILE_SIZE
+    mi.position = Vector3(x, _height_at(x, z), z)
+    sprite_root.add_child(mi)
+    if not ref["states_as_frames"] and _sprite_is_animated(anim):
+        animated_sprites.append(mi)
+    return true
+
+# SC4 stops drawing a sprite prop entirely at zooms its ATC has no frame table
+# for -- traffic lights are authored for zooms 2..4 only, and at zoom 0 a pole
+# would be a sub-pixel smudge. _resolve_sprite still falls back across zooms so
+# the node always holds a usable mesh; this decides whether it is shown.
+func _sprite_visible_at(anim : Dictionary, zoom : int) -> bool:
+    return anim["avp"][zoom] != null
+
+# Which frame of a sprite prop to show. State-indexed props (traffic lights)
+# pick by the occupant's orientation relative to the view, exactly as an S3D
+# occupant picks its baked rotation variant in _place_occupants; everything else
+# runs off the shared animation clock.
+func _sprite_frame(ref : Dictionary, orientation : int, rot : int, tick : int) -> int:
+    if ref["states_as_frames"]:
+        return posmod(rot + ROT_SIGN * orientation, 4)
+    return tick
+
+func _sprite_is_animated(anim : Dictionary) -> bool:
+    for avp in anim["avp"]:
+        if avp != null and avp.frames.size() > 1:
+            return true
+    return false
+
+# Loads an ATC and every per-zoom AVP frame table it names. Returns null if the
+# animation is unusable; the result (including null) is cached per ATC.
+func _sprite_anim(tgi : Array) -> Variant:
+    var key = SubfileTGI.TGI2str(tgi[0], tgi[1], tgi[2])
+    if sprite_anim_cache.has(key):
+        return sprite_anim_cache[key]
+    var out = null
+    if Core.subfile_indices.has(key):
+        var atc = Core.subfile(tgi[0], tgi[1], tgi[2], ATCSubfile)
+        if atc != null and atc.is_valid():
+            var avps = []
+            var any = false
+            for z in range(ATCSubfile.ZOOM_COUNT):
+                var avp = null
+                var iid = atc.avp_by_zoom[z]
+                if iid != 0:
+                    var akey = SubfileTGI.TGI2str(ATCSubfile.AVP_TYPE, atc.avp_group, iid)
+                    if Core.subfile_indices.has(akey):
+                        avp = Core.subfile(ATCSubfile.AVP_TYPE, atc.avp_group, iid, AVPSubfile)
+                        if avp != null and avp.frames.is_empty():
+                            avp = null
+                avps.append(avp)
+                any = any or avp != null
+            if any:
+                out = {"atc": atc, "avp": avps}
+    sprite_anim_cache[key] = out
+    return out
+
+# Resolves an animation to a cached billboard mesh for the requested view,
+# falling back through _zoom_candidates when the prop is not authored at the
+# current zoom (AppearanceZoomsFlag leaves the far zooms empty for small props).
+func _resolve_sprite(anim : Dictionary, s3d_zoom : int, frame : int) -> Variant:
+    var atc : ATCSubfile = anim["atc"]
+    var atc_key = SubfileTGI.TGI2str(ATCSubfile.TYPE_ID, atc.index.group_id, atc.index.instance_id)
+    for z in _zoom_candidates(s3d_zoom):
+        var avp = anim["avp"][z]
+        if avp == null:
+            continue
+        var f = posmod(frame, avp.frames.size())
+        var key = "%s|%d|%d" % [atc_key, z, f]
+        if sprite_mesh_cache.has(key):
+            if sprite_mesh_cache[key] != null:
+                return sprite_mesh_cache[key]
+            continue                       # known-unbuildable at this zoom
+        var mesh = _build_sprite_mesh(atc, avp.frames[f], z)
+        sprite_mesh_cache[key] = mesh
+        if mesh != null:
+            return mesh
+    return null
+
+# Cuts one frame out of its sprite-sheet page and wraps it in a billboard quad.
+#
+# The quad lives in the camera plane (BILLBOARD_ENABLED), so its local axes are
+# screen right and screen up: one sprite pixel is 1/SPRITE_PX_PER_TILE world
+# units along both. Vertices are emitted relative to the frame's anchor pixel,
+# which puts the anchor -- the point the sprite was drawn to stand on -- at the
+# MeshInstance3D's origin, i.e. on the terrain at the occupant's position.
+func _build_sprite_mesh(atc : ATCSubfile, frame, zoom : int) -> Variant:
+    if frame.width <= 0 or frame.height <= 0:
+        return null
+    var page : Image = _sprite_page(atc.fsh_tgi, frame.page)
+    if page == null:
+        return null
+    var x0 = frame.offset % page.get_width()
+    var y0 = frame.offset / page.get_width()
+    if x0 + frame.width > page.get_width() or y0 + frame.height > page.get_height():
+        Log.warn("ATC %08x: frame %dx%d at (%d,%d) runs off its %dx%d page" % [
+            atc.index.instance_id, frame.width, frame.height, x0, y0,
+            page.get_width(), page.get_height()])
+        return null
+    var img = Image.create_empty(frame.width, frame.height, false, Image.FORMAT_RGBA8)
+    img.blit_rect(page, Rect2i(x0, y0, frame.width, frame.height), Vector2i.ZERO)
+
+    var upx = 1.0 / SPRITE_PX_PER_TILE[zoom]
+    # Sprite pixel (px, py) -> quad-local (x right, y up), anchor at the origin.
+    var left = (0 - frame.anchor_x) * upx
+    var right = (frame.width - frame.anchor_x) * upx
+    var top = (frame.anchor_y - 0) * upx
+    var bottom = (frame.anchor_y - frame.height) * upx
+    var verts = PackedVector3Array([
+        Vector3(left, top, 0.0), Vector3(left, bottom, 0.0), Vector3(right, bottom, 0.0),
+        Vector3(left, top, 0.0), Vector3(right, bottom, 0.0), Vector3(right, top, 0.0),
+    ])
+    var uvs = PackedVector2Array([
+        Vector2(0.0, 0.0), Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+        Vector2(0.0, 0.0), Vector2(1.0, 1.0), Vector2(1.0, 0.0),
+    ])
+    var arrays = []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = verts
+    arrays[ArrayMesh.ARRAY_TEX_UV] = uvs
+    var mesh = ArrayMesh.new()
+    mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+
+    var mat = StandardMaterial3D.new()
+    mat.albedo_texture = ImageTexture.create_from_image(img)
+    mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    # The sheets are DXT1 (1-bit alpha) or DXT3; scissoring keeps sprites
+    # depth-sorted against the terrain and each other without a transparent pass.
+    mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+    mat.alpha_scissor_threshold = 0.5
+    mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+    mat.billboard_keep_scale = true
+    mesh.surface_set_material(0, mat)
+    return mesh
+
+# One page (FSH directory entry) of a sprite sheet, decompressed to RGBA8.
+func _sprite_page(fsh_tgi : Array, page : int) -> Variant:
+    var key = "%s|%d" % [SubfileTGI.TGI2str(fsh_tgi[0], fsh_tgi[1], fsh_tgi[2]), page]
+    if sprite_page_cache.has(key):
+        return sprite_page_cache[key]
+    var img = null
+    if Core.subfile_indices.has(SubfileTGI.TGI2str(fsh_tgi[0], fsh_tgi[1], fsh_tgi[2])):
+        var fsh = Core.subfile(fsh_tgi[0], fsh_tgi[1], fsh_tgi[2], FSHSubfile)
+        if fsh != null:
+            img = fsh.page_image(page)
+    sprite_page_cache[key] = img
+    return img
+
+# Advances time-animated sprites. Static ones (traffic lights) never enter
+# animated_sprites, so a city without animated props costs nothing here.
+func _process(delta : float) -> void:
+    if animated_sprites.is_empty():
+        return
+    sprite_clock += delta
+    for mi in animated_sprites:
+        if not mi.visible:
+            continue
+        var ref = mi.get_meta("sprite_ref")
+        var anim = _sprite_anim(ref["tgi"])
+        if anim == null:
+            continue
+        var rate : int = max(anim["atc"].rate, 1)
+        var tick = int(sprite_clock * SPRITE_TICK_HZ / float(rate))
+        if mi.get_meta("sprite_tick", -1) == tick:
+            continue
+        mi.set_meta("sprite_tick", tick)
+        var mesh = _resolve_sprite(anim, current_s3d_zoom, tick)
+        if mesh != null:
+            mi.mesh = mesh
+
+# Swaps every sprite prop to the frame and zoom matching the current view.
+func _set_sprite_view(zoom : int, rot : int):
+    if sprite_root == null:
+        return
+    for mi in sprite_root.get_children():
+        var ref = mi.get_meta("sprite_ref")
+        var anim = _sprite_anim(ref["tgi"])
+        if anim == null:
+            continue
+        mi.visible = _sprite_visible_at(anim, zoom)
+        if not mi.visible:
+            continue
+        var frame = _sprite_frame(ref, mi.get_meta("orientation", 0), rot,
+            mi.get_meta("sprite_tick", 0))
+        var mesh = _resolve_sprite(anim, zoom, frame)
+        if mesh != null:
+            mi.mesh = mesh             # else keep the previous frame
+
 # Swaps every building to the S3D variant matching the current view. Called by
 # CameraAnchor3D on zoom/rotation changes. `free_rot` >= 0 is the free-orbit
 # camera's nearest rotation index (computed with sign +1; ROT_SIGN applied here).
 func set_building_view(cam_zoom : int, rotated : int, free_rot : int = -1):
-    if building_root == null:
+    if building_root == null and sprite_root == null:
         return
     var zoom = S3D_ZOOM_FOR_CAMERA[cam_zoom - 1]
     var rot : int
@@ -1166,13 +1451,15 @@ func set_building_view(cam_zoom : int, rotated : int, free_rot : int = -1):
     current_s3d_zoom = zoom
     current_s3d_rot = rot
     current_rot_comp = comp
-    for mi in building_root.get_children():
-        var ref = mi.get_meta("model_ref")
-        var vrot = posmod(rot + ROT_SIGN * mi.get_meta("orientation", 0), 4)
-        var model = _resolve_model(ref, zoom, vrot)
-        if model != null:
-            mi.mesh = model["mesh"]        # else keep the previous variant
-        mi.rotation.y = comp
+    if building_root != null:
+        for mi in building_root.get_children():
+            var ref = mi.get_meta("model_ref")
+            var vrot = posmod(rot + ROT_SIGN * mi.get_meta("orientation", 0), 4)
+            var model = _resolve_model(ref, zoom, vrot)
+            if model != null:
+                mi.mesh = model["mesh"]        # else keep the previous variant
+            mi.rotation.y = comp
+    _set_sprite_view(zoom, rot)
 
 # Terrain altitude (world units) at tile coordinate (x, z), matching create_terrain's
 # heightmap[z][x] convention; clamps to the map edges.

@@ -8,6 +8,11 @@ var height
 var size
 var mipmaps
 var file_size
+# Every FSH_Entry in the file's directory, in directory order. Most FSHs hold a
+# single image (and `img` above is it), but the animation sheets an ATC points
+# at pack their frames across up to ~70 entries -- an AVP frame names one by
+# index, so the entries have to stay individually addressable.
+var entries : Array = []
 
 func _init(index):
     super._init(index)
@@ -108,17 +113,41 @@ func load(file, dbdf=null):
             entry.size = ((entry.width * entry.height) / 16)*8
             var img_data = raw_data.slice(start, start + entry.size)
             entry.img = Image.create_from_data(entry.width, entry.height, false, Image.FORMAT_DXT1, img_data)
-        elif att_id == 97: # compressed image, DXT3 4x4 packed, 4-bit alpha 
+        elif att_id == 97: # compressed image, DXT3 4x4 packed, 4-bit alpha
             entry.size = ((entry.width * entry.height) / 16)*16
             var img_data = raw_data.slice(start, start + entry.size)
             entry.img = Image.create_from_data(entry.width, entry.height, false, Image.FORMAT_DXT3, img_data)
-        """elif att_id == 123 or att_id == 125 or att_id == 127: # image with palette (256 colors), 24 and 32 bmp
+        elif att_id == 125: # uncompressed 32-bit, stored B,G,R,A
+            entry.size = entry.width * entry.height * 4
+            var img_data = raw_data.slice(start, start + entry.size)
+            for p in range(0, img_data.size() - 3, 4):
+                var blue = img_data[p]
+                img_data[p] = img_data[p + 2]
+                img_data[p + 2] = blue
+            entry.img = Image.create_from_data(entry.width, entry.height, false, Image.FORMAT_RGBA8, img_data)
+        """elif att_id == 123 or att_id == 127: # image with palette (256 colors), 24 bmp
             entry.img.load_bmp_from_buffer(img_data)"""
         assert(entry.img != null) #,"img load failed")
         self.img = entry.img
         self.width = entry.width
         self.height = entry.height
+    self.entries = directory
     return OK
+
+# The image of one directory entry, decompressed and converted to RGBA8 so it
+# can be cropped/blitted. Returns null if the index is out of range or the
+# entry's encoding is one this parser does not decode.
+func page_image(page : int) -> Image:
+    if page < 0 or page >= entries.size():
+        return null
+    var entry = entries[page]
+    if entry.img == null or entry.img.is_empty():
+        return null
+    var out : Image = entry.img.duplicate()
+    if out.is_compressed():
+        out.decompress()
+    out.convert(Image.FORMAT_RGBA8)
+    return out
 
     
 func _get_int_from_bytes(bytearr):

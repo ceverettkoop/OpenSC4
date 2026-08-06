@@ -9,6 +9,10 @@ populated saves in `Regions/`, not just this one, and corrected several identifi
 document previously had wrong — see §4.4 and the [session log](#7-session-log--2026-08-06) at the
 end for what changed and why.*
 
+*Revised again 2026-08-06 while implementing 2D sprite props — the 413 prop occupants in this
+save that reference no 3D model at all. The format that work decoded lives in the DATs, not the
+save, so it changes only the prop lines in §3 and §4.3; the decoding itself is in §8.*
+
 ## 1. The file at a glance
 
 | | |
@@ -75,6 +79,11 @@ index, lot foundations and retaining walls, plus the power-line and bridge subfi
 in other saves. In short: **everything the city renderer needs to draw a complete city, and
 nothing of the simulation.**
 
+Prop rendering was completed later the same day. 413 of this save's 69,431 prop occupants
+reference no 3D model at all — they are 2D sprites, and were being silently dropped; §8 has the
+format and the fix. The 2,339 props still unplaced are a *different* problem: they do name an
+S3D model, but no zoom/rotation variant of it exists in the DATs we load.
+
 **Not implemented (present in this save):** the item index, zone developer/manager, tract
 developer, all 136 SimGrid layers, every simulator/manager state blob, budget (departments, line
 items, taxes), the ~20 ordinances, historical graph data, advice state, and the COM-serializer
@@ -118,7 +127,7 @@ Confidence legend: **Verified** = parsed by this analysis and/or by OpenSC4 code
 | Type ID | Bytes | Records | Identification | Confidence | OpenSC4 status |
 |---|---:|---:|---|---|---|
 | `0xA9BD882D` | 282,127 | 3,427 | Building occupant subfile | Verified | Implemented — `BuildingSubfile.gd`, rendered by `City.gd load_buildings()` |
-| `0x2977AA47` | 6,200,592 | 69,431 | Prop occupant subfile | Verified | Implemented — `PropSubfile.gd`, `load_props()` |
+| `0x2977AA47` | 6,200,592 | 69,431 | Prop occupant subfile | Verified | Implemented — `PropSubfile.gd`, `load_props()`. 66,679 draw as S3D models, 413 as 2D sprites (§8), 2,339 unresolved (S3D variant absent from the loaded DATs) |
 | `0xA9C05C85` | 218,244 | 2,798 | Flora occupant subfile | Verified | Implemented — `FloraSubfile.gd`, `load_flora()` |
 | `0xC9BD5D4A` | 1,086,579 | 3,569 | Lot subfile (tile rect, zoning, wealth) | Verified | Implemented (data-only) — `LotSubfile.gd`, `load_lots()` |
 | `0xC97F987C` | 431,781 | 3,623 | Lot base-texture subfile | Verified | Implemented — `LotBaseTextureSubfile.gd`, `load_lot_textures()` |
@@ -365,6 +374,11 @@ this list assumed: the `CityView/ClassDefinitions/` graph classes still have no 
 needs connectivity, and these subfiles carry only geometry — the connectivity lives in
 `SC4Path`, now item 1 below.
 
+**Done — 2D sprite props (§8), 2026-08-06.** Every prop occupant in this save that has artwork
+in the DATs now draws. What remains on the prop side is not a format gap: 2,339 occupants name
+an S3D model whose zoom/rotation variant is missing from the six DATs the loader opens, which is
+a question of *which files we load*, not of parsing.
+
 Remaining, ordered by likely value to OpenSC4:
 
 1. **`SC4Path` (`0x296678F7`)** — the per-tile vehicle paths. This is now the single missing
@@ -467,6 +481,109 @@ on 36 ground-network tiles, probably a diagonal-flip flag.
 * Water tint still comes from a single texel: `texture(watertexture, vec3(vec2(0.0, 0.0), zoom))`
   paints the whole ocean with the top-left pixel of a 256×256 texture. Sampling with real UVs is
   a one-line change nobody has made yet.
+
+## 8. Session log — 2026-08-06 (second pass): 2D sprite props
+
+Strictly this is a DAT format, not a savegame one; it is recorded here because the save is what
+leads you to it, and because `Core.class_dict` had both of its types registered as `null` — there
+was no parser to read the code for.
+
+**The gap.** `ExemplarSubfile.get_all_model_refs()` finds a prop's model by scanning property
+values for the S3D type marker `0x5AD0E817`. Six prop exemplars used by this save contain no
+such triple, because they are not 3D objects at all. Every one of their 413 occurrences was
+counted as "without a resolvable model" and dropped:
+
+| Exemplar (G=`0xC977C536`) | Instances | What it is |
+|---|---:|---|
+| `0x28F50000` AStreet1x1x11_stoplightPole_28F | 333 | traffic light, orthogonal |
+| `0x29E20000` AStreet1x1x11_stoplightPoleDiag_29E | 29 | traffic light, diagonal |
+| `0x29F00000` / `0x29ED0000` / `0x29EF0000` ARW2x2x5_animatedBallons | 31 | balloon bunches on the car lots |
+| `0x29C20000` Amill4x2x4_exploritorium_29C | 20 | animated crowd of sims |
+
+**ATC (`0x29A5D1EC`)** — the animation header, reached from the exemplar's `ResourceKeyType0`
+(`0x27812820`). Group is `PROPS_ANIM` (`0x2A2458F9`) for props, `NONPROPS_ANIM` (`0x49A593E7`)
+for everything else. Always exactly 48 bytes, twelve little-endian u32s:
+
+| u32 | Meaning |
+|---:|---|
+| 0 | `0x29A5D1EC`, own type |
+| 1–3 | FSH type/group/instance — the sprite sheet |
+| 4 | `0x09ADCD75`, AVP type |
+| 5 | AVP group |
+| 6–10 | one AVP instance id per zoom 0–4; `0` where the prop is not drawn at that zoom |
+| 11 | animation rate |
+
+Slots 6–10 being *per zoom* is the load-bearing discovery, and it is verifiable rather than
+inferred: the filled slots match the exemplar's `AppearanceZoomsFlag` (`0x0ABFC024`) bitmask
+exactly — `0b11100` on the traffic lights, whose filled slots are 2, 3 and 4. Across
+SimCity_1.dat's 1,084 ATCs only three fill patterns occur at all: zooms {3,4} (1,003 of them),
+{2,3,4} (79) and all five (2).
+
+**AVP (`0x09ADCD75`)** — one zoom's frame table. A 0x24-byte header, verified constant across
+all 2,253 AVPs in SimCity_1.dat: own type, frame count, two u32 `1`s, four zero u32s, then the
+frame count repeated. Frame counts are only ever 8, 4 or 1. Then eight bytes per frame:
+
+| Byte | Meaning |
+|---:|---|
+| 0 | page — which FSH *directory entry* holds this frame |
+| 1 | always 8, in all 15,777 frames |
+| 2–3 | u16 pixel offset of the frame's top-left corner within that page |
+| 4–5 | width, height |
+| 6–7 | anchor x, y — **signed int8** |
+
+Two traps here. The page byte matters because an animation FSH is not one image but up to ~70
+directory entries, each a 256×256 DXT1/DXT3 page; `FSHSubfile` was overwriting `self.img` per
+entry and keeping only the last, so multi-page sheets were unreachable. And the offset is a
+*pixel* index within its page, so the corner is `(offset % 256, offset / 256)` — 16 bits covers
+256×256 exactly, which is precisely why the page needs a byte of its own.
+
+The anchors really are signed: 9 of the 15,777 frames anchor left of their own rectangle and 2
+above it. Read unsigned, those sprites land hundreds of pixels away. No frame is wider than 127
+or taller than 126, so the sign costs nothing.
+
+**Pixels to world units.** A billboard needs a scale and nothing in the ATC/AVP/FSH chain states
+one. It is recoverable from the S3D data instead: sprites and S3D impostor textures come out of
+the same pre-renderer, and an S3D vertex carries both a world position and a UV. Least-squares
+fitting `world position -> UV × texture size` over ~700 building models per zoom gives the full
+2×3 world→screen-pixel matrix. Its row norms, median over the fits, are pixels per 16 m tile:
+
+| zoom | 0 | 1 | 2 | 3 | 4 |
+|---|---:|---:|---:|---:|---:|
+| px per tile | 6.449 | 12.576 | 24.965 | 56.170 | 112.147 |
+
+Two things fall out of that fit and are the reason to trust it. The matrix's two rows have equal
+norm to better than 0.1% — the projection is conformal in the camera plane, which is what makes a
+single scalar enough to size a billboard. And the matrix independently reproduces SC4's camera:
+`u_x / u_z = 2.4166 ≈ tan 67.5°`, and the vertical-to-horizontal ratio is `sin 45°` at zooms 3–4
+and `sin 50°` at zoom 2 — the azimuth and per-zoom elevations `CameraAnchor3D.gd` already
+hardcodes, arrived at from completely independent data. Note the ladder is not a clean ×2:
+24.965 → 56.170 is ×2.25. That is measured, not derived; do not "correct" it.
+
+**Traffic-light frames are rotations, not signal phases.** The stoplight exemplars set "States as
+Frames" (`0x4A70D491`), which is easy to read as red/amber/green. It is not: extracting the four
+zoom-4 frames side by side shows two back views of the pole and two front views with the green
+lamp lit — they are the four *view rotations*, the sprite equivalent of an S3D model's four baked
+rotation variants. So the frame index uses the same expression `_place_occupants` uses to pick a
+rotation variant. Whatever drives actual lamp cycling is not in this chain; the exemplar's
+`ResourceKeyTypeMisc` (`0x27812920`) names a *second* ATC (`0x2B2D0000`, which does exist, with
+its own AVPs and FSH) that was not investigated.
+
+**Engine-side findings worth keeping.**
+
+* Sprites are camera-facing billboards with vertices emitted relative to the anchor pixel, so the
+  anchor lands on the terrain at the occupant's position. Anything that centres the quad instead
+  leaves poles floating or buried.
+* `TRANSPARENCY_ALPHA_SCISSOR`, for the same reason §7 gives for network quads — the transparent
+  pass has no depth write and sprites would sort wrongly against buildings.
+* Sprites are hidden at zooms whose ATC slot is empty, as SC4 does, rather than falling back to a
+  coarser zoom's art. At zoom 0 a traffic light is 4 px wide and would be sub-pixel noise on 362
+  draw calls. Verified by counting lit-lamp pixels down the zoom ladder: 86, 22, 3, 0 at camera
+  zooms 6, 4, 3, 2 — the last being the first unauthored zoom.
+
+**Still open.** The rate field's unit (read as 1/30 s ticks per frame, which puts the balloons at
+0.7 s and the crowd at 1.0 s per frame — plausible, unverified); AVP header u32s 2 and 3, always
+`1`; the second stoplight ATC at `0x2B2D0000`; and whether SC4 ever drives a sprite's frame from
+simulation state, which is what real red/amber/green cycling would require.
 
 ## Appendix A — SimGrid layer inventory (dataIds)
 

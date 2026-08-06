@@ -120,6 +120,7 @@ func val_from_format(format):
         print("ERROR, unkown format: %d", format)
         
 const S3D_TYPE : int = 0x5ad0e817
+const ATC_TYPE : int = 0x29a5d1ec
 
 # Returns the [type, group, instance] of this exemplar's S3D model, or null.
 # Works across every ResourceKeyType variant (RKT0/1/4/5) by scanning property
@@ -140,6 +141,17 @@ func get_model_tgi():
 # from. The key matters: an RKT1 (0x27812821) ref is a *base* instance that fans
 # out to 5 zoom x 4 rotation models, so the caller must offset it to pick an LOD.
 func get_all_model_refs() -> Array:
+    return _scan_refs(S3D_TYPE)
+
+# The sprite counterpart of get_all_model_refs(). Props with no 3D model at all
+# -- traffic lights, animated balloons, the exploratorium -- reference an ATC
+# animation header (see ATCSubfile.gd) instead, normally under ResourceKeyType0.
+func get_all_sprite_refs() -> Array:
+    return _scan_refs(ATC_TYPE)
+
+# Scans array-valued properties for `type_id` followed by two more ids, and
+# returns each hit as {"prop_key": <RKT variant>, "tgi": [type, group, instance]}.
+func _scan_refs(type_id : int) -> Array:
     var refs = []
     for key in self.properties.keys():
         var value = self.properties[key]
@@ -147,7 +159,7 @@ func get_all_model_refs() -> Array:
             continue
         var i = 0
         while i <= value.size() - 3:
-            if value[i] == S3D_TYPE:
+            if value[i] == type_id:
                 refs.append({"prop_key": key, "tgi": [value[i], value[i + 1], value[i + 2]]})
                 i += 3   # skip past the triple we just consumed
             else:
