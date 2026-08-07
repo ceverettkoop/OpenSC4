@@ -39,7 +39,9 @@ OpenSC4 is an open-source **Godot 4.7 (GDScript)** reimplementation of *SimCity 
   res://tools/ScreenshotCity.tscn -- <out_dir> ["<region>" "<city name>"]` — same load
   path, then saves `city_zoom1.png` (whole map) and `city_zoom4.png` (map centre,
   close-up) to `<out_dir>` and quits; ends with `SCREENSHOTS DONE`. Use it to eyeball
-  placement/rendering changes.
+  placement/rendering changes. After the city name it also takes shot specs
+  `tx,tz,zoom[,rot][,name]` and the bare keywords `pipes`, `graph` and `walking`. Under
+  Xvfb add `--rendering-driver opengl3`.
 - Main scene: `BootScreen.tscn`. **There is no test suite.**
 
 ## Architecture
@@ -85,6 +87,11 @@ Everything flows through this singleton.
   (3D models), `ATCSubfile`/`AVPSubfile` (2D sprite props — see below), `LTEXTSubfile`
   (UTF-16 strings), `ImageSubfile` (PNG), `RULSubfile` (network rules), `SC4PathSubfile`
   (vehicle paths — see below), `CURSubfile` (cursors), `INISubfile`.
+- **SimGrids** (`SimGridSubfile`, city-save types `0x49B9E602/03/04/05/06/0A`) — the per-tile
+  simulation layers behind every data view. One subfile holds many grids keyed by `dataId`;
+  cells are **column-major, `index = x * height + z`**. Loaded on demand via
+  `City.load_sim_grids()`, not at city load. The traffic layers are SC4's own simulation
+  output and are used as ground truth for the network graph — see `dev_notes` §11.
 - **SC4Path (0x296678F7)** — a **plain text** format (CRLF), and the network's connectivity.
   One file per network *piece*: which lanes cross that tile, which edge each enters and
   leaves by (0..3 WNES, 255 = ends inside the tile), and for which class (1 Car, 2 Sim,
@@ -143,7 +150,9 @@ Everything flows through this singleton.
   over 14,952 nodes, largest car component 96.3% of drivable tiles. **Avenues are a known
   gap**: they are one network two tiles wide whose carriageways trade traffic across the
   median, which per-tile paths do not describe, so avenue cities fragment — see
-  `dev_notes/save_file_analysis` §10.
+  `dev_notes/save_file_analysis` §10. `NetworkDebugDraw.gd` draws the graph over the city
+  (**G** to toggle, **H** to add pedestrian lanes) — build it before trusting any change to
+  the conventions, since a wrong rotation still renders a plausible road network.
   `CityView/ClassDefinitions/` still holds the older, unwired sketches (`NetGraphNode`,
   `NetGraphEdge`, `NetTile`), kept only because `TransitTiles.gd` still references them.
 - **DAT Explorer** (`DATExplorer/`): a `Tree` browser over loaded DBPF archives with TGI

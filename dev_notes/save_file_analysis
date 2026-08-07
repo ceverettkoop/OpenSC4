@@ -719,6 +719,77 @@ components**, while avenue-free cities sit at 96–99%. The harness reports rath
 avenue tiles are present. Closing this needs proper 2-tile-network modelling: pairing tiles across
 their code-`4` edges and linking the carriageways.
 
+## 11. SimGrids, and checking the graph against SC4's own simulator
+
+`addons/dbpf/SimGridSubfile.gd` parses all six SimGrid types. Header offsets (verified against all
+136 grids of Big City Tutorial — every one satisfies `xSize * zSize * cell == payload`): `dataId` at
+**19**, `xSize` at **31**, `zSize` at **35**, cells start at **55**. Cells are stored **column-major,
+`index = x * height + z`** — reading it the other way scores 0.247 against the network footprint
+where this scores 0.998, so a transpose looks almost but not quite right.
+
+### Identifying the traffic layers
+
+The dataId → name mapping is not documented anywhere we have, so the traffic layers were identified
+by correlating each 128×128 grid's nonzero footprint against the city's actual network tiles:
+
+| dataId | type | nonzero | Jaccard vs network | Road mean | Street mean | Rail mean |
+|---|---|---:|---:|---:|---:|---:|
+| `0x69D5C3AC` | f32 | 3341 | **0.998** | 364.8 | 119.5 | 2.6 |
+| `0x69D5C402` | u8 | 3341 | **0.998** | 3.1 | 49.5 | 1.1 |
+| `0x69D5C40E` | f32 | 3286 | 0.982 | 0.44 | 1.38 | 0.03 |
+| `0x69D5C3E1` | f32 | 3200 | 0.958 | 250.9 | 83.6 | **0.0 (4/139 tiles)** |
+| `0x89D5C3A2` | u8 | 3171 | 0.951 | 36.5 | 12.0 | **0.0 (4/139 tiles)** |
+
+The next-best non-network grid scores **0.269**, so the identification is not marginal. Two layers
+are near-zero on rail while nonzero on every road and street — SC4 stores volume **per mode**, the
+same decomposition the SC4Path classes give. Six sibling grids (`0x69D5C3E0/E2/E3/E4/E5`,
+`0x69D5C3FA`) are all-zero: the transit modes this city does not have. The names in the parser are
+inferred from footprint and distribution, **not read from a label**.
+
+### The result
+
+This is the strongest check available on the graph, because it compares against the shipped game's
+own answer rather than against our expectations:
+
+| Save | Traffic-grid vs model | Tiles SC4 gave car traffic that carry car arcs |
+|---|---:|---:|
+| Big City Tutorial | Jaccard **0.998** (3335 of 3341) | **100.0%** (3198 of 3198) |
+| Rush Hour Tutorial | Jaccard **0.980** (630 of 643) | **100.0%** (288 of 288) |
+
+Every tile SC4's own traffic simulator recorded car traffic on has car arcs in our graph.
+
+### Why the graph can feed a simulation at all
+
+`SimCity_1.dat` holds exemplar **T `0x6534284A` G `0xE7E2C2DB` I `0xC9133286`, "Traffic Simulato[r]"**,
+48 properties. Every speed is a **13-element array indexed by network type**, matching
+`NetworkSubfile.NETWORK_TYPE_NAMES` exactly:
+
+```
+Driving Speed  [31, 0, 82, 21, 0, 0, 40, 0, 0,  0, 31, 0, 82]
+Walking Speed  [3.5,0,  0,3.5, 0, 0,3.5, 0, 0,  0,3.5, 0,  0]
+Train Speed    [ 0,110,  0,  0, 0, 0,  0, 0, 0,  0,  0, 0,  0]
+index:          Road Rail ElH Str Pipe Pwr Ave Sub LR Mono 1Way Dirt GndHwy
+```
+
+So arc length ÷ `speed[travel_type][network_type]` is a complete travel-time cost function today.
+Also present: `Pathfinding Heuristic = 0.09`, `Speed Multiplier by Network`, `Monthly cost for
+network tile`, `Income per tile by travel type`, `Maximum distance from origin to network = 6.0`,
+`Commute trip max time`, wealth-based travel-strategy splits.
+
+**`Intersection and Turn Capacity Effect = 1.2` is why arcs are per-turn.** A per-turn capacity
+multiplier has nothing to attach to on a tile-adjacency graph; the SC4Path `entry → exit` arc is that
+object.
+
+Travel types number **9** (`Mass Transit Usage Chance` and `Network Traffic Capacity` are 9-element,
+and there are 9 speed properties) against SC4Path's **6** classes, because paths describe lane
+*geometry*: Bus and Truck ride Car paths, Freight rides Train paths. A fixed 9→6 table reconciles
+them.
+
+**Not found:** an absolute per-network vehicle capacity. `Capacity to Accident Probability` and the
+turn-capacity multiplier both reference a capacity that must exist somewhere, most likely in the EXE
+— which is how NAM's traffic-simulator mods work, by overriding this exemplar. That blocks
+congestion modelling, not connectivity or routing.
+
 ## Appendix A — SimGrid layer inventory (dataIds)
 
 All 136 grids parse with the 55-byte header `size, crc, mem, u16 major, u8, u32 ownType,

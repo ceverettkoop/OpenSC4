@@ -529,6 +529,22 @@ var network_model : NetworkModel = null
 # It keeps itself current off the model's tiles_changed signal.
 var network_graph : NetworkGraph = null
 
+# Line overlay drawing the graph over the city. Hidden until toggled with G.
+var network_debug : NetworkDebugDraw = null
+
+# SC4's own simulation data grids, dataId -> SimGridSubfile.Grid. Loaded on
+# demand rather than at city load: it is ~1.2 MB of cells across 136 layers and
+# nothing renders from it yet. Its value today is as ground truth -- the traffic
+# layers are the shipped game's own answer for which tiles carry traffic, which
+# is a far better check on the graph than anything we could invent.
+var sim_grids : Dictionary = {}
+
+func load_sim_grids() -> Dictionary:
+    if sim_grids.is_empty():
+        sim_grids = SimGridSubfile.load_all(savefile)
+        Log.info("SimGrids: %d layers loaded" % sim_grids.size())
+    return sim_grids
+
 # FSH group holding network surface textures; instance = family + zoom 0..4.
 # Same group the interactive build tool uses (TransitTiles.gd).
 const NETWORK_TEXTURE_GROUP : int = 0x1abe787d
@@ -583,6 +599,15 @@ func load_networks():
     Log.info("Network graph: %d arcs over %d nodes, classes %s, %d dangling portals"
         % [network_graph.arc_count(), network_graph.node_count(),
            network_graph.class_histogram(), network_graph.dangling_portals()])
+
+    # The overlay lives under the world node so it turns with the view; see
+    # NetworkDebugDraw's header. It starts hidden and builds its mesh the first
+    # time it is shown, so a city load pays nothing for it.
+    network_debug = NetworkDebugDraw.new()
+    network_debug.name = "NetworkDebug"
+    $Node3D.add_child(network_debug)
+    network_debug.attach(network_graph)
+    network_model.tiles_changed.connect(func(_dirty): network_debug.queue_rebuild())
 
     if not orient["mismatches"].is_empty():
         # Grouped so the residual stays diagnosable rather than just being a
@@ -793,6 +818,24 @@ func set_pipes_visible(on : bool):
 func toggle_underground_view() -> bool:
     set_pipes_visible(not underground_view)
     return underground_view
+
+# Shows or hides the network graph overlay. Toggled with G, mirroring U above.
+func set_graph_debug_visible(on : bool) -> void:
+    if network_debug != null:
+        network_debug.set_shown(on)
+
+func toggle_graph_debug() -> bool:
+    if network_debug == null:
+        return false
+    var on = network_debug.toggle()
+    Log.info("Network graph overlay %s: %s" % ["on" if on else "off", network_debug.stats()])
+    return on
+
+# Adds or removes pedestrian arcs from the overlay, on H. They roughly double
+# the line count, so they are off by default.
+func toggle_graph_debug_pedestrians() -> void:
+    if network_debug != null:
+        network_debug.toggle_class(SC4PathSubfile.CLASS_SIM)
 
 # Reads the game's own index over the network subfiles. Nothing renders from it
 # -- it is the authority for "which occupant is on this tile", which simulation

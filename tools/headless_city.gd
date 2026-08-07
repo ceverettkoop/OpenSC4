@@ -262,7 +262,75 @@ func _check_graph(city, model) -> bool:
             ok = false
 
     ok = _check_rail_purity(model, graph) and ok
+    ok = _check_against_simulation(city, model, graph) and ok
     ok = _check_incremental(city, model, graph) and ok
+    return ok
+
+# Checks the model against SC4's own traffic simulation output, which the game
+# saved per tile. This is the strongest check available: it compares our
+# network against the shipped game's answer rather than against our own
+# expectations, and it is sensitive to exactly the mistakes -- a transposed
+# axis, a dropped tile -- that leave the city rendering perfectly.
+const MIN_TRAFFIC_JACCARD : float = 0.95
+
+func _check_against_simulation(city, model, graph) -> bool:
+    var grids = city.load_sim_grids()
+    var total = grids.get(SimGridSubfile.TRAFFIC_TOTAL)
+    if total == null:
+        print("  note  no traffic SimGrid in this save, skipping the ground-truth check")
+        return true
+
+    var map_tiles : int = city.size_w * 64
+    var traffic_cells := {}
+    for cell in total.nonzero_cells():
+        traffic_cells[cell] = true
+    var ours := {}
+    for cell in model.tiles.keys():
+        ours[cell] = true
+
+    var intersection := 0
+    for cell in traffic_cells.keys():
+        if ours.has(cell):
+            intersection += 1
+    var union : int = traffic_cells.size() + ours.size() - intersection
+    var jaccard : float = float(intersection) / float(max(1, union))
+
+    var ok := true
+    if jaccard >= MIN_TRAFFIC_JACCARD:
+        print("  ok    traffic grid agrees with the model: %d of %d tiles, Jaccard %.3f"
+            % [intersection, union, jaccard])
+    else:
+        push_error("traffic grid only overlaps the model at Jaccard %.3f (%d shared, %d union)"
+            % [jaccard, intersection, union])
+        ok = false
+
+    # The car-traffic layer is near-zero on rail, so every tile it marks should
+    # be somewhere a car can actually get to.
+    var car = grids.get(SimGridSubfile.TRAFFIC_CAR)
+    if car == null:
+        return ok
+    var drivable := {}
+    for arc in graph.arcs:
+        if arc != null and arc.transport_class == SC4PathSubfile.CLASS_CAR:
+            drivable[arc.cell] = true
+    var had_traffic := 0
+    var missing : Array = []
+    for cell in car.nonzero_cells():
+        if not ours.has(cell):
+            continue
+        had_traffic += 1
+        if not drivable.has(cell):
+            missing.append(cell)
+    if had_traffic == 0:
+        return ok
+    var covered : float = 1.0 - float(missing.size()) / float(had_traffic)
+    if covered >= MIN_TRAFFIC_JACCARD:
+        print("  ok    %.1f%% of tiles SC4 gave car traffic carry car arcs (%d of %d)"
+            % [covered * 100.0, had_traffic - missing.size(), had_traffic])
+    else:
+        push_error("only %.1f%% of tiles SC4 gave car traffic carry car arcs; e.g. %s"
+            % [covered * 100.0, missing.slice(0, 5)])
+        ok = false
     return ok
 
 # Rail-only tiles must carry Train arcs and no Car arcs. If the class tag were

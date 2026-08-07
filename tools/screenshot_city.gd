@@ -22,6 +22,11 @@ extends Node
 #       --rendering-driver opengl3 --resolution 1600x900 res://tools/ScreenshotCity.tscn -- ...
 # Example:
 #   ... -- /tmp/shots "Timbuktu" "Big City Tutorial" 64,64,4 32,96,5 100,20,5,2,rail_xing
+#
+# Bare keywords, in any position after the city name:
+#   pipes     reveal the underground water pipes
+#   graph     draw the transport graph over the city (vehicle lanes)
+#   walking   as graph, plus the pedestrian lanes
 
 const DEFAULT_REGION = "Timbuktu"
 const DEFAULT_CITY = "Big City Tutorial"
@@ -46,12 +51,23 @@ func _ready():
     var city_name = DEFAULT_CITY
     var shots : Array = []
     var show_pipes = false
+    var show_graph = false
+    var show_walking = false
     if user_args.size() >= 3:
         region = user_args[1]
         city_name = user_args[2]
         for i in range(3, user_args.size()):
             if user_args[i] == "pipes":
                 show_pipes = true
+                continue
+            # "graph" draws the transport graph over the city; "walking" adds
+            # the pedestrian lanes, which are off by default.
+            if user_args[i] == "graph":
+                show_graph = true
+                continue
+            if user_args[i] == "walking":
+                show_graph = true
+                show_walking = true
                 continue
             var shot = _parse_shot(user_args[i])
             if shot == null:
@@ -90,6 +106,11 @@ func _ready():
     print("City ready, capturing")
     if show_pipes:
         city.set_pipes_visible(true)
+    if show_graph:
+        if show_walking:
+            city.toggle_graph_debug_pedestrians()
+        city.set_graph_debug_visible(true)
+        print("Graph overlay: %s" % city.network_debug.stats())
 
     var cam = city.get_node("CameraHandler")
     var half = city.size_w * 64 / 2.0    # world units are tiles

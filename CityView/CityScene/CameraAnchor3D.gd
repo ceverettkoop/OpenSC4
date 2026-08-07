@@ -45,6 +45,18 @@ func _input(event):
             var on = city.toggle_underground_view()
             Log.info("Underground view %s" % ("on" if on else "off"))
         return
+    # G draws the transport graph over the city; H adds pedestrian lanes to it,
+    # which are off by default because they roughly double the line count.
+    if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_G:
+        var city = get_parent()
+        if city.has_method("toggle_graph_debug"):
+            city.toggle_graph_debug()
+        return
+    if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_H:
+        var city = get_parent()
+        if city.has_method("toggle_graph_debug_pedestrians"):
+            city.toggle_graph_debug_pedestrians()
+        return
     if free_mode:
         _free_input(event)
         return
