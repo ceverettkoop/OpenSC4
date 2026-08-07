@@ -15,18 +15,21 @@ extends MeshInstance3D
 # at this class's public methods and nowhere else -- inside, everything is
 # Vector2; outside, everything is Vector2i.
 #
-# KNOWN DEFECT, pre-dating the split: drawn roads render solid black. The tile
-# solving, the model and the graph are all correct -- only the texturing is
-# wrong. The transit shader (City.tscn SubResource 18) reads the texture-array
-# layer out of UV2, packed as (layer & 255, layer >> 8) with 128 added to the
-# green channel once a tile is committed. Instrumenting the shader to output
-# UV2 directly shows it arriving as (0, 0), so the layer never reaches it and
-# every fragment samples layer 0 -- which is why the geometry is right and the
-# colour is not. The vertex emission below is unchanged from the pre-split
-# code and get_uvs()/get_mesh_arrays() are byte-identical, so this is a Godot
-# 3 to 4 port artefact in how UV2 survives add_surface_from_arrays, not
-# something the split introduced. The save's own roads are unaffected: City.gd
-# draws those with a plain StandardMaterial3D and a real texture.
+# Texturing. The transit shader (City.tscn SubResource 18) reads the
+# texture-array layer out of UV2, packed as (layer & 255, layer >> 8) with 128
+# added to the green channel once a tile is committed. That path works: a probe
+# quad carrying UV2 (13, 128) through an ArrayMesh comes out of the fragment
+# stage as layer 13, and the 285-layer array packs every RUL texture id without
+# dropping one.
+#
+# Drawn roads used to render solid black anyway, and the cause was the face
+# NORMALS below, not UV2. Both triangle windings here are counter-clockwise
+# seen from above, so the old v.cross(u) produced (0, -1, 0) -- a road lit by a
+# sun overhead through a normal aimed at the ground gets no diffuse term, and
+# City.tscn's environment draws its ambient from a background whose energy
+# multiplier is 0, leaving nothing. The shader is also `unshaded` now, matching
+# the material City.gd gives the save's own network quads, because SC4's road
+# textures already have their lighting baked in.
 class_name NetworkRenderer
 
 var mat = self.get_material_override()
@@ -178,12 +181,29 @@ func _to_model_tile(loc : Vector2, tile) -> Variant:
     record.piece_id = spec[0]
     record.orientation = (int(spec[1]) & 3) | (0x80 if int(spec[2]) == 1 else 0)
     record.wnes = PackedInt32Array(tile.edges)
-    record.network_types = [_network_type_index(drag_network)]
+    var drag_type := _network_type_index(drag_network)
+    record.network_types = [drag_type]
     record.crossings = [{
-        "type": record.network_types[0],
+        "type": drag_type,
         "west": tile.edges[0], "north": tile.edges[1],
         "east": tile.edges[2], "south": tile.edges[3],
     }]
+    # Dragging across a DIFFERENT network is a level crossing, and the tile this
+    # record replaces is the only surviving record of the other network being
+    # here -- so carry its crossings over rather than erasing them. The piece
+    # drawn is still the drag network's: SC4 has dedicated crossing pieces and
+    # choosing one needs the crossed network's RUL table, so for now the graph
+    # gets the drag's lanes and not the crossed network's. Crossing the SAME
+    # network needs no second entry; the merged edges above already describe the
+    # whole intersection, and duplicating it would double-count in the model's
+    # type histogram.
+    var existing = model.get_tile(record.cell) if model != null else null
+    if existing != null:
+        for crossing in existing.crossings:
+            if crossing["type"] == drag_type:
+                continue
+            record.crossings.append(crossing)
+            record.network_types.append(crossing["type"])
     record.base_height = _tile_height(record.cell)
     record.source = NetworkModel.SOURCE_USER
     return record
@@ -204,7 +224,16 @@ func forget_cells(cells : Array) -> void:
         _rebuild_built_mesh(cells)
 
 # Brings the drawn mesh back in line with the model, after an undo.
+#
+# An undo can hand a cell back to the save. Undoing a drag that crossed one of
+# the save's roads restores the SOURCE_SAVE tile, and City.gd puts its quad back
+# on screen; the drawn intersection has to stop being ours at the same moment or
+# the cell draws twice.
 func resync(cells : Array) -> void:
+    for cell in cells:
+        var tile = model.get_tile(cell) if model != null else null
+        if tile != null and tile.source == NetworkModel.SOURCE_SAVE:
+            network_tiles.erase(Vector2(cell.x, cell.y))
     _rebuild_built_mesh(cells)
 
 # Rebuilds the committed mesh, dropping any quad whose cell no longer holds a
@@ -216,7 +245,14 @@ func _rebuild_built_mesh(_cells : Array) -> void:
     var keep : Array = []
     for i in range(0, built_tracker.size(), 6):
         var loc = built_tracker[i]
-        if network_tiles.has(loc) or (model != null and model.has_tile(Vector2i(int(loc.x), int(loc.y)))):
+        # Keep the quad while this renderer still owns the cell. The model check
+        # is the second half of that, not a fallback to the model's authority:
+        # a multi-tile piece tracks quads at sub-tile locations that are not
+        # keys in network_tiles. A cell the model has handed BACK to the save is
+        # explicitly not ours -- City.gd is drawing it again from the batched
+        # save mesh, so keeping the drawn quad too would draw the cell twice.
+        var tile = model.get_tile(Vector2i(int(loc.x), int(loc.y))) if model != null else null
+        if network_tiles.has(loc) or (tile != null and tile.source != NetworkModel.SOURCE_SAVE):
             keep.append(i)
     var filtered : Array = []
     filtered.resize(ArrayMesh.ARRAY_MAX)
@@ -260,6 +296,39 @@ const BULLDOZE_LIFT : float = 0.09
 
 # The network the current drag is laying, for _to_model_tile.
 var drag_network : String = "Road"
+
+# --- what is already on the ground -------------------------------------------
+#
+# The drag solver has to reconcile a drag with two different sources of existing
+# tiles: the ones this renderer drew, in `network_tiles`, which carries the RUL
+# edge codes the solver works in; and the ones that came from the city save,
+# which only NetworkModel knows about. `network_tiles` alone is not the ground
+# truth and never was -- it is this class's working set.
+#
+# Consulting only `network_tiles` is why dragging a road across one of the
+# SAVE's roads built a straight piece on top of it instead of an intersection.
+# The merge below never saw the road being crossed, so the RUL table was asked
+# for a two-edge shape; and the record that then replaced the save tile in the
+# model carried only the drag's own edges, which took the crossed road's arcs
+# out of the graph with them. Roads this renderer had drawn itself already
+# worked, which is what hid it.
+#
+# Returns the four RUL edge codes at `loc`, or null if nothing is there.
+func _existing_edges(loc : Vector2) -> Variant:
+    if network_tiles.has(loc):
+        return network_tiles[loc].edges
+    if model == null:
+        return null
+    var tile = model.get_tile(Vector2i(int(loc.x), int(loc.y)))
+    # NetworkModel keeps the unioned WNES as a PackedInt32Array; the RUL tables
+    # are keyed by plain Array, and the two do not compare equal as dictionary
+    # keys, so this has to convert rather than pass the packed array through.
+    return Array(tile.wnes) if tile != null else null
+
+func _has_existing(loc : Vector2) -> bool:
+    if network_tiles.has(loc):
+        return true
+    return model != null and model.has_tile(Vector2i(int(loc.x), int(loc.y)))
 
 func _drag_network(start, end, type):
     self.drag_arrays.resize(ArrayMesh.ARRAY_MAX)
@@ -343,9 +412,9 @@ func _drag_network(start, end, type):
     var intersect_ind = []
     for loc_i in range(len(edges[1])):
         var loc = edges[1][loc_i]
-        if network_tiles.has(loc):
+        var edge_e = _existing_edges(loc)
+        if edge_e != null:
             var edge_d = edges[0][loc_i]
-            var edge_e = network_tiles[loc].edges
             var edge_res = []
             if self.drag_first:
                 for i in range(len(edge_d)):
@@ -382,13 +451,14 @@ func _drag_network(start, end, type):
                 if loc_fix in edges[1]:
                     var ind = edges[1].find(loc_fix)
                     edge_fix = edges[0][ind].duplicate()
-                elif network_tiles.has(loc_fix):
-                    edge_fix = network_tiles[loc_fix].edges.duplicate()
                 else:
+                    var existing = _existing_edges(loc_fix)
                     # The recursion reached a cell with nothing on it. That was
                     # impossible while the tile set only ever grew, but a
                     # bulldoze can now take a tile out from under it.
-                    continue
+                    if existing == null:
+                        continue
+                    edge_fix = existing.duplicate()
                 # edge_ind_affected starts with length 0
                 if not len(edge_ind_affected) == 0:
                     # get the first in list and remove it from list
@@ -404,10 +474,8 @@ func _drag_network(start, end, type):
                         if edges[1].has(affected_loc):
                             var n_ind = edges[1].find(affected_loc)
                             n_edge = edges[0][n_ind]
-                        elif network_tiles.has(affected_loc):
-                            n_edge = network_tiles[affected_loc].edges
                         else:
-                            n_edge = null
+                            n_edge = _existing_edges(affected_loc)
                         # only add the neighbor if the affected edge wasn't fixed yet
                         if n_edge != null and (n_edge[n_i] == 1 or n_edge[n_i] == 3):
                             loc_to_fix.append(affected_loc)
@@ -448,10 +516,8 @@ func _drag_network(start, end, type):
                                 if edges[1].has(affected_loc):
                                     var n_ind = edges[1].find(affected_loc)
                                     n_edge = edges[0][n_ind]
-                                elif network_tiles.has(affected_loc):
-                                    n_edge = network_tiles[affected_loc].edges
                                 else:
-                                    n_edge = null
+                                    n_edge = _existing_edges(affected_loc)
                                 # only add the neighbor if the affected edge wasn't fixed yet
                                 if n_edge != null and (n_edge[n_i] == 1 or n_edge[n_i] == 3):
                                     loc_to_fix.append(affected_loc)
@@ -509,9 +575,10 @@ func _drag_network(start, end, type):
                 div += 1
                 var vec = neigh_num_to_vec[line]
                 var loc = b_loc + vec
-                var drag_bool = edges[1].has(loc)
-                var built_bool = network_tiles.has(loc)
-                if drag_bool or built_bool:
+                # The save's tiles count as neighbours here too, or a variant
+                # that wants a road to its east scores no better next to one of
+                # the save's roads than next to bare ground.
+                if edges[1].has(loc) or _has_existing(loc):
                     points += 1
             var score : float = float(points)/float(div)
             if (score > best_score) or (score == best_score and points > best_points):
@@ -692,12 +759,22 @@ func _drag_network(start, end, type):
                     # indices   0 1 2 3 4 5		 0 1 2 3 4 5
                     # ind 1 == 4 is used as the anchors
                     # 2 to 0 and 5 to 3 results in counter-clockwise order for both
+                    # u.cross(v), not v.cross(u). Both triangle windings here
+                    # are counter-clockwise seen from above, so v.cross(u) is
+                    # the DOWNWARD face normal: for the flat case it works out
+                    # to (0, -1, 0) for every triangle of both vecadd
+                    # orderings. A road lit from a sun overhead by a normal
+                    # pointing at the ground gets no diffuse term at all, and
+                    # City.tscn's environment takes its ambient from a
+                    # background whose energy multiplier is 0 -- which is why
+                    # drawn roads rendered solid black while their geometry,
+                    # UVs and texture layer were all correct.
                     var v = normal_verts[2] - normal_verts[1]
                     var u = normal_verts[0] - normal_verts[1]
-                    var normal1 : Vector3 = v.cross(u).normalized()
+                    var normal1 : Vector3 = u.cross(v).normalized()
                     v  = normal_verts[5] - normal_verts[4]
                     u  = normal_verts[3] - normal_verts[4]
-                    var normal2 : Vector3 = v.cross(u).normalized()
+                    var normal2 : Vector3 = u.cross(v).normalized()
                     for norm in [normal1, normal2]:
                         for _face_vert in range(3):
                             self.drag_arrays[ArrayMesh.ARRAY_NORMAL].append(norm)

@@ -27,8 +27,17 @@ extends Node
 #   pipes     reveal the underground water pipes
 #   graph     draw the transport graph over the city (vehicle lanes)
 #   walking   as graph, plus the pedestrian lanes
+#   hold      aim at the first shot and STAY OPEN instead of capturing/quitting
 #   draw:x1,z1,x2,z2   lay a road through the build tool before shooting
 #   del:x1,z1,x2,z2    bulldoze that box before shooting
+#
+# "hold" turns the harness into a viewer: it does the same load, parks the iso
+# camera on the first shot spec and then hands the window to whoever is sitting
+# in front of it -- normal camera keys, the build tool, G/H/F all work. Nothing
+# is written and the scene never calls quit(), so <out_dir> is meaningless and
+# "hold" may simply take its place as the first argument:
+#   godot --path . --windowed --resolution 1600x900 res://tools/ScreenshotCity.tscn \
+#       -- hold "Timbuktu" "Big City Tutorial" graph 49,67,6
 
 const DEFAULT_REGION = "Timbuktu"
 const DEFAULT_CITY = "Big City Tutorial"
@@ -43,11 +52,17 @@ var dat_files = [
 ]
 
 func _ready():
-    var user_args = OS.get_cmdline_user_args()
+    var user_args : Array = Array(OS.get_cmdline_user_args())
     if user_args.is_empty():
-        push_error("Usage: ... res://tools/ScreenshotCity.tscn -- <out_dir> [<region> <city>]")
+        push_error("Usage: ... res://tools/ScreenshotCity.tscn -- <out_dir>|hold [<region> <city>]")
         get_tree().quit(1)
         return
+    # In hold mode nothing is written, so the leading <out_dir> is redundant and
+    # "hold" is allowed to stand in for it. Blanking it here rather than
+    # shifting the array keeps region/city at the fixed indices 1 and 2.
+    var hold : bool = user_args.has("hold")
+    if hold and user_args[0] == "hold":
+        user_args[0] = ""
     var out_dir = user_args[0]
     var region = DEFAULT_REGION
     var city_name = DEFAULT_CITY
@@ -71,6 +86,10 @@ func _ready():
             if user_args[i] == "walking":
                 show_graph = true
                 show_walking = true
+                continue
+            # Already picked up before the city name was parsed; swallow it here
+            # so it is not mistaken for a shot spec.
+            if user_args[i] == "hold":
                 continue
             # "draw:x1,z1,x2,z2" lays a road before the shot; "del:x1,z1,x2,z2"
             # bulldozes a box. Lets the visual harness exercise the build tool,
@@ -125,6 +144,20 @@ func _ready():
 
     var cam = city.get_node("CameraHandler")
     var half = city.size_w * 64 / 2.0    # world units are tiles
+
+    # Viewer mode: park the camera and return without quitting, leaving the
+    # scene tree running so the window stays live and takes input as usual.
+    if hold:
+        # No shot spec means the same default framing as a no-shot capture run:
+        # the middle of the map, close enough to make out individual lots.
+        var view = shots[0] if not shots.is_empty() else \
+            {"tx": half, "tz": half, "zoom": 4, "rot": cam.rotated}
+        if shots.size() > 1:
+            print("hold: showing the first of %d shots, ignoring the rest" % shots.size())
+        _aim(city, cam, view.tx, view.tz, view.zoom, view.rot)
+        print("HOLDING at tile (%d, %d) zoom %d -- close the window to quit"
+            % [view.tx, view.tz, view.zoom])
+        return
 
     if shots.is_empty():
         await _capture("%s/city_zoom1.png" % out_dir)

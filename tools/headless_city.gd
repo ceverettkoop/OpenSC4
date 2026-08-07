@@ -229,14 +229,13 @@ func _check_graph(city, model) -> bool:
     # boundaries stopped merging this fragments long before anything else
     # visibly breaks.
     #
-    # Avenues are the known exception and are not yet counted against us. An
-    # avenue is one network two tiles wide, and its two carriageways exchange
-    # traffic across the shared median (RUL edge code 4) rather than through
-    # per-tile paths -- SC4's avenue/road intersection piece 0x04005500 emits
-    # only the lanes ARRIVING at the junction, with nothing departing into the
-    # avenue. Until median pairing is modelled, a city with avenues genuinely
-    # does fragment here. Rush Hour Tutorial (43 avenue tiles) drops to ~59%,
-    # while avenue-free cities sit at 96-99%.
+    # The share of the largest component is reported but not asserted on,
+    # because a city can legitimately hold more than one road system: Rush Hour
+    # Tutorial's three components sit in disjoint corners of the map with no
+    # tile touching between them, so its largest covers only 63%. What IS
+    # asserted is that no two NEIGHBOURING drivable tiles landed in different
+    # components -- a boundary the graph failed to cross is always a defect,
+    # whatever the city's layout.
     var sizes = graph.component_cell_sizes(SC4PathSubfile.CLASS_CAR)
     var avenue_cells := 0
     for cell in model.tiles.keys():
@@ -250,21 +249,23 @@ func _check_graph(city, model) -> bool:
         for size in sizes:
             car_cells += size
         var share : float = float(sizes[0]) / float(max(1, car_cells))
-        var summary := "largest car component covers %d of %d drivable tiles (%.1f%%), %d components" \
-            % [sizes[0], car_cells, share * 100.0, sizes.size()]
-        if avenue_cells > 0:
-            print("  note  %s -- %d two-tile (avenue) tiles present, median pairing not modelled yet"
-                % [summary, avenue_cells])
-        elif share >= MIN_LARGEST_COMPONENT:
-            print("  ok    %s" % summary)
+        print("  info  largest car component covers %d of %d drivable tiles (%.1f%%), %d components, %d avenue tiles"
+            % [sizes[0], car_cells, share * 100.0, sizes.size(), avenue_cells])
+        var split = graph.disconnected_adjacencies(SC4PathSubfile.CLASS_CAR)
+        if split.is_empty():
+            print("  ok    every pair of neighbouring drivable tiles is mutually reachable")
         else:
-            push_error("%s -- the network is fragmenting" % summary)
+            push_error("%d neighbouring tile pairs are in different car components, e.g. %s"
+                % [split.size(), split.slice(0, 5)])
             ok = false
+        if share < MIN_LARGEST_COMPONENT and sizes.size() > 1:
+            print("  note  %d separate road systems -- check they are meant to be separate" % sizes.size())
 
     ok = _check_rail_purity(model, graph) and ok
     ok = _check_against_simulation(city, model, graph) and ok
     ok = _check_incremental(city, model, graph) and ok
     ok = _check_tool(city, model, graph) and ok
+    ok = _check_crossing(city, model, graph) and ok
     return ok
 
 # Drives the build tool the way a user would, without a mouse, and checks the
@@ -362,6 +363,144 @@ func _check_tool(city, model, graph) -> bool:
         ok = false
     return ok
 
+# Dragging a road ACROSS a road that came from the save.
+#
+# _check_tool deliberately draws on clear ground so the counts stay predictable,
+# which left this case untested: the drag solver reconciled a drag only against
+# tiles the renderer had drawn itself, so crossing one of the save's roads laid a
+# straight piece over the top of it. The road still LOOKED continuous either
+# side of the new one, because the save's own quad was still being drawn
+# underneath, while the model record that replaced it claimed two edges instead
+# of four -- so the crossed road's arcs stopped at the intersection and traffic
+# could no longer get through it.
+#
+# The assertion is the one that would have caught that: after the drag the
+# crossing tile claims all four sides, carries arcs, and the four tiles around
+# it are mutually reachable through it.
+const CROSS_ARM : int = 3
+
+func _check_crossing(city, model, graph) -> bool:
+    var tool = city.network_tool
+    if tool == null:
+        return true
+
+    print("\n--- crossing an existing road ---")
+    var site = _find_crossable_road(model, city.size_w * 64, city.size_h * 64)
+    if site == null:
+        print("  note  no straight save road with clear ground either side")
+        return true
+    var cell : Vector2i = site["cell"]
+    var axis : Vector2i = site["axis"]          # the drag runs along this
+    var before_fingerprint : int = graph.fingerprint()
+    var before_source : int = model.get_tile(cell).source
+
+    var from : Vector2i = cell - axis * CROSS_ARM
+    var to : Vector2i = cell + axis * CROSS_ARM
+    tool.draw_line(from, to, "Road")
+
+    var ok := true
+    var tile = model.get_tile(cell)
+    if tile == null:
+        push_error("drawing across %s left no tile there" % cell)
+        return false
+
+    var sides : Array = tile.connected_sides()
+    if sides.size() == 4:
+        print("  ok    %s became a 4-way intersection (wnes %s, piece 0x%08x)"
+            % [cell, tile.wnes, tile.piece_id])
+    else:
+        push_error("%s connects %s after being crossed -- wanted all four sides (wnes %s)"
+            % [cell, sides, tile.wnes])
+        ok = false
+
+    # Arcs have to exist on the crossing tile in BOTH axes. Counting arcs is not
+    # enough: a straight piece laid over the junction still carries the drag's
+    # own two.
+    var axes := {}
+    for idx in graph.arcs_by_cell.get(cell, []):
+        var arc = graph.arcs[idx]
+        if arc == null or arc.transport_class != SC4PathSubfile.CLASS_CAR:
+            continue
+        var span : Vector3 = arc.polyline[arc.polyline.size() - 1] - arc.polyline[0]
+        axes[absf(span.x) > absf(span.z)] = true
+    if axes.size() == 2:
+        print("  ok    the intersection carries car lanes on both axes")
+    else:
+        push_error("%s carries car lanes on %d axis/axes, wanted 2" % [cell, axes.size()])
+        ok = false
+
+    # The real test: everything around the junction hangs together through it.
+    var arms : Array = [cell]
+    for step in [axis, -axis, Vector2i(axis.y, axis.x), Vector2i(-axis.y, -axis.x)]:
+        var neighbour : Vector2i = cell + step
+        if model.has_tile(neighbour):
+            arms.append(neighbour)
+    # Cars specifically. The pedestrian lanes around a junction sit in several
+    # components before the drag as well as after -- sidewalks are not one
+    # network -- so counting every class together measures something that was
+    # never 1 and says nothing about whether traffic gets through.
+    var components : int = _components_over(graph, arms, SC4PathSubfile.CLASS_CAR)
+    if components == 1:
+        print("  ok    all %d tiles around the junction are mutually reachable by car" % arms.size())
+    else:
+        push_error("the junction's %d surrounding tiles fall into %d car components"
+            % [arms.size(), components])
+        ok = false
+
+    # The save's own quad for the cell must stop drawing, or the old straight
+    # road shows through the new intersection.
+    if before_source == NetworkModel.SOURCE_SAVE:
+        if city.network_removed_cells.has(cell):
+            print("  ok    the save's quad for %s was withdrawn" % cell)
+        else:
+            push_error("the save still draws its own quad under the new intersection at %s" % cell)
+            ok = false
+
+    tool.undo()
+    if model.get_tile(cell) == null or model.get_tile(cell).source != before_source:
+        push_error("undo did not give %s back to the save" % cell)
+        ok = false
+    elif graph.fingerprint() != before_fingerprint:
+        push_error("undoing the crossing left the graph changed")
+        ok = false
+    elif city.network_removed_cells.has(cell):
+        push_error("undo restored the tile but left the save's quad withdrawn at %s" % cell)
+        ok = false
+    else:
+        print("  ok    undo restored the crossed road exactly")
+    return ok
+
+# A straight two-edge road tile whose perpendicular neighbours are clear for
+# CROSS_ARM tiles either side, so a drag across it meets that road and nothing
+# else. Returns {cell, axis} where axis is the direction the drag should run.
+func _find_crossable_road(model, map_w : int, map_h : int):
+    var road_type : int = NetworkSubfile.NETWORK_TYPE_NAMES.find("Road")
+    for cell in model.tiles.keys():
+        var tile = model.tiles[cell]
+        if tile.network_type() != road_type or tile.crossings.size() != 1:
+            continue
+        var sides : Array = tile.connected_sides()
+        if sides.size() != 2:
+            continue
+        # Opposite edges only: a corner piece would put the drag alongside the
+        # road rather than across it.
+        if NetworkModel.opposite(sides[0]) != sides[1]:
+            continue
+        var axis := Vector2i(NetworkModel.SIDE_DELTA[sides[0]].y, NetworkModel.SIDE_DELTA[sides[0]].x)
+        var clear := true
+        for step in range(1, CROSS_ARM + 1):
+            for dir in [axis, -axis]:
+                var probe : Vector2i = cell + dir * step
+                if probe.x < 1 or probe.y < 1 or probe.x >= map_w - 1 or probe.y >= map_h - 1:
+                    clear = false
+                elif model.has_tile(probe):
+                    clear = false
+            if not clear:
+                break
+        if clear:
+            return {"cell": cell, "axis": axis}
+    return null
+
 # Bulldozing a tile that came from the save is the awkward case: its quad lives
 # inside a mesh batched by texture family, with no per-tile addressing, so the
 # family has to be rebuilt. Removing it from the model and the graph while
@@ -414,13 +553,15 @@ func _mesh_vertex_count(node) -> int:
 
 # Connected components counted over just these cells, so a local split shows up
 # without being drowned out by the rest of the city.
-func _components_over(graph, cells : Array) -> int:
+func _components_over(graph, cells : Array, transport_class : int = -1) -> int:
     var wanted := {}
     for cell in cells:
         wanted[cell] = true
     var adjacent := {}
     for arc in graph.arcs:
         if arc == null or not wanted.has(arc.cell):
+            continue
+        if transport_class >= 0 and arc.transport_class != transport_class:
             continue
         for pair in [[arc.from_node, arc.to_node], [arc.to_node, arc.from_node]]:
             if not adjacent.has(pair[0]):

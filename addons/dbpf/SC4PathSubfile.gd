@@ -303,6 +303,22 @@ func class_histogram() -> Dictionary:
 # `orientation` is the RAW byte from NetworkTile.orientation, including the 0x80
 # flip bit -- do not mask it before calling, that is where the flip gets lost.
 
+# Whether a placement reverses the direction a lane is driven in.
+#
+# The 0x80 bit mirrors the piece, and a mirror reverses handedness: the image of
+# a lane that keeps to the right of its carriageway keeps to the LEFT of the
+# mirrored one. SC4 uses the mirror precisely to build the opposite half of a
+# two-tile network from the same piece -- the west carriageway of a north-south
+# avenue is the east carriageway mirrored -- so the traffic on a mirrored piece
+# runs the other way. transform_dir and transform_local place the lane; this
+# says which end of it is the entry.
+#
+# Measured on Rush Hour Tutorial: every boundary its 43 avenue tiles failed to
+# cross had one mirrored tile and one unmirrored one, and every boundary they
+# did cross had either two mirrored tiles or none. See NetworkGraph._emit_tile.
+static func mirrors_traversal(orientation : int) -> bool:
+    return (orientation & 0x80) != 0
+
 # Rotate one WNES edge index onto a placed tile. SIDE_NONE passes through.
 static func transform_dir(side : int, orientation : int) -> int:
     if side == SIDE_NONE:

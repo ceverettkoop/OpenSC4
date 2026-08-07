@@ -695,29 +695,50 @@ Portals are matched between neighbouring tiles by **position**: the boundary com
 entry/exit edge (exact, see §9), the lane identity from the coordinate. Exact key matches merge for
 free; the rest go through a greedy nearest-first pass with a 2 m tolerance.
 
-Big City Tutorial: **16,770 arcs over 14,952 nodes** from 3,335 tiles — Car 8,256, Sim 8,220,
-Train 294. Largest car component covers **3,129 of 3,250 drivable tiles (96.3%)** over 10 components.
-All 135 rail-only tiles carry Train arcs and none carry Car. Konradshohe: 99.1% over 3 components.
+Big City Tutorial: **16,770 arcs over 14,800 nodes** from 3,335 tiles — Car 8,256, Sim 8,220,
+Train 294. Largest car component covers **3,200 of 3,200 drivable tiles (100%)** in one component.
+All 135 rail-only tiles carry Train arcs and none carry Car.
 
-**One-sided portals are normal.** Big City has 1,642 (30 dead ends, 1,612 facing an occupied
+**One-sided portals are normal.** Big City has 1,018 (30 dead ends, 988 facing an occupied
 neighbour). These are not stitch failures — the harness measures `missed_pairable`, the number with a
 still-unpaired complement inside tolerance, and it is **0**. They are lanes whose neighbouring piece
-simply has no matching lane: a sidewalk down one side of a street, a turn pocket that stops. Most are
-Sim (1,249 of 1,612).
+simply has no matching lane: a sidewalk down one side of a street, a turn pocket that stops. Almost
+all are Sim (941 of 988); only 47 are Car.
 
-### Known limitation: avenues fragment the car graph
+### The 0x80 mirror bit reverses the direction of travel
 
-An avenue is one network **two tiles wide**, and its carriageways exchange traffic across the shared
-median (RUL edge code `4`) rather than through per-tile paths. Concretely, SC4's avenue/road
-intersection piece `0x04005500` emits only the lanes *arriving* at the junction: at the boundary
-between (47,72) and (47,73) in Rush Hour Tutorial, **both** tiles emit arcs starting there, at
-identical coordinates, and nothing arrives. The portal is one-sided and unfixable by stitching,
-because the inbound movement is a median crossing the path files do not describe.
+A mirror reverses handedness. The image of a lane whose cars keep to the right of their carriageway
+is a lane whose cars keep to the *left* — so a mirrored piece cannot be driven the way the path file
+describes it. SC4 uses the mirror precisely to build the second half of a two-tile network from the
+same piece: the west carriageway of a north–south avenue is the east carriageway mirrored, and it
+runs the other way. `SC4PathSubfile.transform_dir`/`transform_local` place a mirrored lane correctly;
+what they cannot say is which end of it is the entry. `mirrors_traversal(orientation)` does, and
+`NetworkGraph._emit_tile` swaps the record's entry and exit and reverses the polyline.
 
-So Rush Hour Tutorial (43 avenue tiles) drops to a largest car component of **59.0% over 16
-components**, while avenue-free cities sit at 96–99%. The harness reports rather than fails when
-avenue tiles are present. Closing this needs proper 2-tile-network modelling: pairing tiles across
-their code-`4` edges and linking the carriageways.
+This is measurable rather than a matter of taste, because `orientation_report` compares *sets* of
+connected sides and so is blind to direction. The evidence is the boundaries the car graph failed to
+cross. In Rush Hour Tutorial, before the fix, all 30 one-sided car portals on avenue boundaries sat
+on a boundary with exactly one mirrored tile — e.g. between (47,72) `o=0x82` and (47,73) `o=0x00`,
+both tiles emitted arcs *starting* at the shared point and nothing arrived. Every boundary with two
+mirrored tiles or none was already sound. Afterwards: **0** one-sided car portals on those
+boundaries.
+
+| Save | largest car component, before | after |
+|---|---|---|
+| Big City Tutorial (no avenues) | 96.3% over 10 components | **100% over 1** |
+| Rush Hour Tutorial (43 avenue tiles) | 59.0% over 16 components | 63.2% over **3** |
+| Konradshohe (152 avenue tiles) | 99.1% over 3 components | **99.6% over 2** |
+
+Rush Hour's remaining three components are not a defect: they occupy disjoint parts of the map
+(x 0–66/z 86–120, x 98–118/z 77–121, x 44–58/z 55–81) and there is **not one pair of neighbouring
+tiles** in different components. That is the assertion the harness now makes, in place of a
+threshold on the largest component's share — a share threshold cannot tell a broken link from a city
+with two road systems, and every populated save passes the adjacency form.
+
+What is still deferred is the *edge agreement* check, not connectivity: an avenue tile's WNES carries
+the shared-median code `4` for the edge it shares with its partner, which its own path file does not
+describe, so 26 of Rush Hour's 630 tiles and 144 of Konradshohe's 857 are excluded from
+`orientation_report`. Closing that needs tiles paired across their code-`4` edges.
 
 ## 11. SimGrids, and checking the graph against SC4's own simulator
 

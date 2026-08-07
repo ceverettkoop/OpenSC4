@@ -745,11 +745,19 @@ func _on_network_tiles_changed(dirty : Array) -> void:
         return
     var changed := false
     for cell in dirty:
-        var gone : bool = not network_model.has_tile(cell)
-        if gone and not network_removed_cells.has(cell):
+        var tile = network_model.get_tile(cell)
+        # The save's quad has to come off the screen in two cases, not one: when
+        # the tile is bulldozed away, and when the build tool REPLACES it.
+        # Dragging a road across one of the save's roads leaves a drawn
+        # intersection on that cell, and the save's own straight quad underneath
+        # it both z-fights and shows the old shape through the new one.
+        # Restoring the tile on undo puts a SOURCE_SAVE tile back and un-hides
+        # it again.
+        var hidden : bool = tile == null or tile.source != NetworkModel.SOURCE_SAVE
+        if hidden and not network_removed_cells.has(cell):
             network_removed_cells[cell] = true
             changed = true
-        elif not gone and network_removed_cells.has(cell):
+        elif not hidden and network_removed_cells.has(cell):
             network_removed_cells.erase(cell)
             changed = true
     if not changed:

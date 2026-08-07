@@ -400,7 +400,12 @@ shader_parameter/bot_ind = null
 
 [sub_resource type="Shader" id="18"]
 code = "shader_type spatial;
-render_mode depth_draw_always;
+// Unshaded, like the material City.gd gives the save's own network quads:
+// SC4's road textures have their lighting baked in, and this scene's
+// environment takes its ambient from a background whose energy multiplier is
+// 0, so a lit road's brightness would swing with the sun and sit darker than
+// the shipped road it connects to.
+render_mode depth_draw_always, unshaded;
 
 uniform sampler2DArray textarr : source_color;
 varying float built;

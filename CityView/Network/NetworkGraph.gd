@@ -166,14 +166,33 @@ func _drop_cell(cell : Vector2i) -> void:
 
 # Removes the portal nodes on one boundary. Any arc still referencing them is
 # re-emitted by its own cell, so only the node bookkeeping is undone here.
+#
+# A node that still carries arcs has to STAY on the boundary's roster. Only the
+# dirty cells are re-emitted, so a portal holding the arcs of an undisturbed
+# neighbour is never passed through _ensure_node again and would never be
+# re-registered -- and _stitch_boundary works from this roster, so it would then
+# see only the freshly emitted half of the boundary and find nothing to pair it
+# with. The two sides ended up on separate nodes a centimetre apart with no arc
+# between them: a boundary that was joined before the edit and silently came
+# apart after it, in a graph whose arc count and topology elsewhere were
+# unchanged. Wiping the whole list was safe only while every rebuild was a full
+# one.
 func _drop_boundary(key : String) -> void:
     if not nodes_by_boundary.has(key):
         return
+    var survivors : Array = []
     for id in nodes_by_boundary[key]:
         var node = nodes.get(id)
-        if node != null and node.degree() == 0:
+        if node == null:
+            continue
+        if node.degree() == 0:
             nodes.erase(id)
-    nodes_by_boundary.erase(key)
+        else:
+            survivors.append(id)
+    if survivors.is_empty():
+        nodes_by_boundary.erase(key)
+    else:
+        nodes_by_boundary[key] = survivors
 
 func _detach(node_id : String, arc_idx : int) -> void:
     var node = nodes.get(node_id)
@@ -203,6 +222,25 @@ func _emit_tile(cell : Vector2i, boundaries : Dictionary) -> void:
         for c in rec.coords:
             polyline.append(SC4PathSubfile.to_world(c, cell.x, cell.y,
                 tile.orientation, tile.base_height))
+        # A mirrored placement drives the lane backwards -- see
+        # SC4PathSubfile.mirrors_traversal. to_world has already put the lane in
+        # the right PLACE; what is left is which end of it cars start from, so
+        # the record's entry and exit swap and the polyline runs the other way.
+        #
+        # This is what fragmented avenue cities. SC4 builds an avenue's two
+        # carriageways from one piece placed twice, once mirrored, so at every
+        # boundary between a mirrored tile and an unmirrored one both sides
+        # emitted arcs pointing the same way: two lanes leaving the boundary and
+        # nothing arriving, or the reverse. The stitch cannot repair that -- it
+        # only pairs a portal missing its incoming half with one missing its
+        # outgoing half, and these were all missing the same half.
+        var entry : int = rec.entry
+        var exit : int = rec.exit
+        if SC4PathSubfile.mirrors_traversal(tile.orientation):
+            polyline.reverse()
+            var swap := entry
+            entry = exit
+            exit = swap
         var arc := Arc.new()
         arc.cell = cell
         arc.transport_class = rec.transport_class
@@ -210,8 +248,8 @@ func _emit_tile(cell : Vector2i, boundaries : Dictionary) -> void:
         arc.is_junction = rec.is_junction
         arc.polyline = polyline
         arc.length_m = rec.length_m()
-        arc.from_node = _node_for(cell, tile, rec.entry, polyline[0], rec.transport_class, boundaries)
-        arc.to_node = _node_for(cell, tile, rec.exit,
+        arc.from_node = _node_for(cell, tile, entry, polyline[0], rec.transport_class, boundaries)
+        arc.to_node = _node_for(cell, tile, exit,
             polyline[polyline.size() - 1], rec.transport_class, boundaries)
         _add_arc(arc)
 
@@ -266,9 +304,14 @@ func _ensure_node(id : String, world : Vector3, transport_class : int, boundary 
         node.transport_class = transport_class
         node.boundary = boundary
         nodes[id] = node
-        if boundary != "":
-            if not nodes_by_boundary.has(boundary):
-                nodes_by_boundary[boundary] = []
+    # Registration is separate from creation, and idempotent. An incremental
+    # update can re-emit a tile whose portal node survived the teardown on some
+    # other cell's arcs, and that node still has to be on the roster the stitch
+    # reads.
+    if boundary != "":
+        if not nodes_by_boundary.has(boundary):
+            nodes_by_boundary[boundary] = []
+        if not nodes_by_boundary[boundary].has(id):
             nodes_by_boundary[boundary].append(id)
     return id
 
@@ -457,6 +500,71 @@ func component_cell_sizes(transport_class : int) -> Array:
     sizes.sort()
     sizes.reverse()
     return sizes
+
+# Pairs of neighbouring cells that BOTH CLAIM THE EDGE BETWEEN THEM, both carry
+# arcs of one class, and still sit in different components. Each is a boundary
+# the graph failed to cross, and is a defect in a way a bare component count is
+# not: a city can legitimately hold several road systems with no tile touching
+# between them (Rush Hour Tutorial holds three, in disjoint corners of the map).
+#
+# Adjacency alone is NOT the invariant, which is why both edge codes are tested.
+# Two neighbouring tiles can each carry traffic and legitimately not connect --
+# a diagonal piece (edge codes 1 and 3) running past an orthogonal one (code 2)
+# is the common shape, and the shipped saves hold 103 such pairs: 69 in Big
+# City, 25 in Kensington, 5 in Rush Hour, 4 in Fulham. Both tiles read 0 on the
+# edge they share. Demanding those be connected would be inventing a road SC4
+# never drew.
+#
+# Returns an Array of {a, b} cell pairs, each listed once.
+func disconnected_adjacencies(transport_class : int) -> Array:
+    if _model == null:
+        return []
+    var component := {}
+    var undirected := {}
+    for arc in arcs:
+        if arc == null or arc.transport_class != transport_class:
+            continue
+        for pair in [[arc.from_node, arc.to_node], [arc.to_node, arc.from_node]]:
+            if not undirected.has(pair[0]):
+                undirected[pair[0]] = []
+            undirected[pair[0]].append(pair[1])
+    var next_id := 0
+    for start in undirected.keys():
+        if component.has(start):
+            continue
+        var stack : Array = [start]
+        component[start] = next_id
+        while not stack.is_empty():
+            var current = stack.pop_back()
+            for next in undirected.get(current, []):
+                if not component.has(next):
+                    component[next] = next_id
+                    stack.append(next)
+        next_id += 1
+    var of_cell := {}
+    for arc in arcs:
+        if arc == null or arc.transport_class != transport_class:
+            continue
+        if not of_cell.has(arc.cell):
+            of_cell[arc.cell] = component.get(arc.from_node, -1)
+    var out : Array = []
+    for cell in of_cell.keys():
+        var tile = _model.tiles.get(cell)
+        if tile == null:
+            continue
+        for side in [SC4PathSubfile.SIDE_EAST, SC4PathSubfile.SIDE_SOUTH]:
+            var other : Vector2i = cell + NetworkModel.SIDE_DELTA[side]
+            if not of_cell.has(other) or of_cell[other] == of_cell[cell]:
+                continue
+            var neighbour = _model.tiles.get(other)
+            if neighbour == null:
+                continue
+            # Neither tile need connect this way -- only a pair that both say
+            # they do, and then cannot, is a failure to cross the boundary.
+            if tile.wnes[side] == 0 or neighbour.wnes[NetworkModel.opposite(side)] == 0:
+                continue
+            out.append({"a": cell, "b": other})
+    return out
 
 # The cells reachable from `cell` following arcs of one class, respecting
 # direction. Used to check that a one-way road really is one-way.
