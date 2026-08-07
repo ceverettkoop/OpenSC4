@@ -350,6 +350,8 @@ func _check_tool(city, model, graph) -> bool:
             push_error("undo did not restore the bulldozed tile")
             ok = false
 
+    ok = _check_save_tile_bulldoze(city, model, tool) and ok
+
     # Undo the draw itself and confirm we are exactly back where we started.
     model.undo()
     if model.size() == before_tiles and graph.fingerprint() == before_fingerprint:
@@ -359,6 +361,56 @@ func _check_tool(city, model, graph) -> bool:
             % [model.size(), before_tiles, graph.fingerprint(), before_fingerprint])
         ok = false
     return ok
+
+# Bulldozing a tile that came from the save is the awkward case: its quad lives
+# inside a mesh batched by texture family, with no per-tile addressing, so the
+# family has to be rebuilt. Removing it from the model and the graph while
+# leaving it on screen would look like nothing happened.
+func _check_save_tile_bulldoze(city, model, tool) -> bool:
+    var victim = null
+    for cell in model.tiles.keys():
+        var tile = model.tiles[cell]
+        if tile.source == NetworkModel.SOURCE_SAVE and city.network_family_nodes.has(tile.piece_id):
+            victim = cell
+            break
+    if victim == null:
+        print("  note  no save tile with a batched mesh to bulldoze")
+        return true
+
+    var family : int = model.tiles[victim].piece_id
+    var node = city.network_family_nodes[family]
+    var before : int = _mesh_vertex_count(node)
+    var before_graph : int = city.network_graph.fingerprint()
+    tool.bulldoze([victim])
+    var after : int = _mesh_vertex_count(node)
+    var ok := true
+    if model.has_tile(victim):
+        push_error("bulldozing save tile %s left it in the model" % victim)
+        ok = false
+    elif after < before:
+        print("  ok    bulldozing save tile %s shrank its batch (%d -> %d vertices)"
+            % [victim, before, after])
+    else:
+        push_error("bulldozing save tile %s left its quad in the mesh (%d vertices, unchanged)"
+            % [victim, after])
+        ok = false
+    tool.undo()
+    if not model.has_tile(victim):
+        push_error("undo did not restore the bulldozed save tile")
+        ok = false
+    elif _mesh_vertex_count(node) != before:
+        push_error("undo restored the tile but not its quad (%d vertices, want %d)"
+            % [_mesh_vertex_count(node), before])
+        ok = false
+    elif city.network_graph.fingerprint() != before_graph:
+        push_error("undoing the save-tile bulldoze restored the mesh but not the graph")
+        ok = false
+    return ok
+
+func _mesh_vertex_count(node) -> int:
+    if node == null or node.mesh == null or node.mesh.get_surface_count() == 0:
+        return 0
+    return node.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX].size()
 
 # Connected components counted over just these cells, so a local split shows up
 # without being drowned out by the rest of the city.

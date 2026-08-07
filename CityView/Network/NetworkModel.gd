@@ -223,16 +223,23 @@ func undo() -> Array:
     if _undo_stack.is_empty():
         return []
     var prior : Dictionary = _undo_stack.pop_back()
-    var dirty : Array = []
+    var dirty := {}
     for cell in prior.keys():
         var tile = prior[cell]
         if tile == null:
             tiles.erase(cell)
         else:
             tiles[cell] = tile
-        dirty.append(cell)
-    tiles_changed.emit(dirty)
-    return dirty
+    # Dirty the neighbours too, not just the cells written. place() and
+    # remove() both do, and the set has to be the same shape going back as it
+    # was going forward: a neighbour that was re-derived when the tile went
+    # away has to be re-derived again when it returns, or the graph keeps the
+    # arcs it grew while the tile was missing.
+    for cell in prior.keys():
+        _mark(dirty, cell)
+    var out = dirty.keys()
+    tiles_changed.emit(out)
+    return out
 
 func can_undo() -> bool:
     return not _undo_stack.is_empty()

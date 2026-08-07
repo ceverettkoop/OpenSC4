@@ -626,58 +626,142 @@ func load_networks():
     root.name = "Networks"
     $Node3D.add_child(root)
 
-    # Batch by (texture family, layer) so each family is one mesh + one material.
-    var by_family = {}
+    # Batch by texture family so each family is one mesh and one material. The
+    # membership is kept rather than thrown away, because bulldozing a save
+    # tile has to cut its quad back out and there is no per-tile addressing
+    # inside a batch -- the affected family gets rebuilt from this list instead.
+    network_family_tiles = {}
     var drawn = 0
     for tile in save_network_tiles:
         if not tile.is_present():
             continue
         drawn += 1
         if tile.base_texture != 0:
-            _queue_network_quad(by_family, tile.base_texture, tile, NETWORK_BASE_LIFT)
+            _register_network_quad(tile.base_texture, tile, NETWORK_BASE_LIFT)
         if tile.texture_id != 0:
-            _queue_network_quad(by_family, tile.texture_id, tile, NETWORK_SURFACE_LIFT)
+            _register_network_quad(tile.texture_id, tile, NETWORK_SURFACE_LIFT)
 
     # Bridge/elevated decks store the same four-vertex quad, so they batch into
     # the same meshes. They sit above the terrain already, so no lift.
-    drawn += _queue_bridges(by_family)
+    drawn += _queue_bridges()
 
     var missing = {}
-    for iid in by_family.keys():
-        var tex = _network_texture(iid)
-        if tex == null:
-            missing[iid] = by_family[iid]["verts"].size() / 4
-            continue
-        var arrays = []
-        arrays.resize(ArrayMesh.ARRAY_MAX)
-        arrays[ArrayMesh.ARRAY_VERTEX] = by_family[iid]["verts"]
-        arrays[ArrayMesh.ARRAY_TEX_UV] = by_family[iid]["uvs"]
-        arrays[ArrayMesh.ARRAY_COLOR] = by_family[iid]["colors"]
-        arrays[ArrayMesh.ARRAY_INDEX] = by_family[iid]["indices"]
-        var mesh = ArrayMesh.new()
-        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-        var mat = StandardMaterial3D.new()
-        mat.albedo_texture = tex
-        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-        mat.vertex_color_use_as_albedo = true
-        mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-        # Each tile's UVs span the full 0..1 of its texture, so the sampler must
-        # CLAMP: with the default repeat, a pixel on a tile edge filters against
-        # the texture's opposite edge and leaves a hairline seam along every
-        # tile boundary. Scissor rather than blend, so these stay in the opaque
-        # pass and sort by depth -- alpha-blended networks land in the
-        # transparent pass, where per-object ordering let lot aprons and the
-        # network's own base layer draw over the road at intersections.
-        mat.texture_repeat = false
-        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-        mesh.surface_set_material(0, mat)
-        var mi = MeshInstance3D.new()
-        mi.mesh = mesh
-        root.add_child(mi)
+    for iid in network_family_tiles.keys():
+        if not _build_family_mesh(iid):
+            missing[iid] = network_family_tiles[iid].size()
     Log.info("Drew %d network tiles (%d texture families, %d missing from the DATs)"
-        % [drawn, by_family.size(), missing.size()])
+        % [drawn, network_family_tiles.size(), missing.size()])
     if not missing.is_empty():
         Log.warn("load_networks: texture families missing from the DATs: %s" % missing)
+
+    # Rebuild a family's mesh whenever the tiles under it change, so bulldozing
+    # a road that came from the save actually removes it from the screen.
+    network_model.tiles_changed.connect(_on_network_tiles_changed)
+
+# texture family -> Array of {tile, lift, cell}, the membership of each batched
+# mesh, and family -> the MeshInstance3D drawing it. Kept so one family can be
+# rebuilt when a tile under it is bulldozed.
+var network_family_tiles : Dictionary = {}
+var network_family_nodes : Dictionary = {}
+# Cells whose save quads should no longer draw. A bulldozed save tile stays in
+# save_network_tiles (that array mirrors the file, which we do not write), so
+# the exclusion is tracked here instead.
+var network_removed_cells : Dictionary = {}
+
+# Adds one tile's quad to a family's membership. The geometry itself is built
+# later, in _build_family_mesh, so a rebuild and the initial build share a path.
+func _register_network_quad(iid : int, tile, lift : float) -> void:
+    if not network_family_tiles.has(iid):
+        network_family_tiles[iid] = []
+    network_family_tiles[iid].append({
+        "tile": tile, "lift": lift,
+        "cell": Vector2i(tile.tile_x(), tile.tile_z()),
+    })
+
+# Builds (or rebuilds) one family's mesh from its current membership, skipping
+# bulldozed cells. Returns false when the family's texture is not in the DATs.
+func _build_family_mesh(iid : int) -> bool:
+    var tex = _network_texture(iid)
+    if tex == null:
+        return false
+    var verts := PackedVector3Array()
+    var uvs := PackedVector2Array()
+    var colors := PackedColorArray()
+    var indices := PackedInt32Array()
+    for entry in network_family_tiles[iid]:
+        if network_removed_cells.has(entry["cell"]):
+            continue
+        var base := verts.size()
+        for v in entry["tile"].vertices:
+            # Record positions are metres in the same frame as the heightmap.
+            verts.append(Vector3(v.position.x / TILE_SIZE,
+                v.position.y / TILE_SIZE + entry["lift"], v.position.z / TILE_SIZE))
+            uvs.append(v.uv)
+            colors.append(v.color)
+        for i in [0, 1, 2, 0, 2, 3]:
+            indices.append(base + i)
+
+    var node = network_family_nodes.get(iid)
+    if verts.is_empty():
+        if node != null:
+            node.mesh = null
+        return true
+    var arrays := []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = verts
+    arrays[ArrayMesh.ARRAY_TEX_UV] = uvs
+    arrays[ArrayMesh.ARRAY_COLOR] = colors
+    arrays[ArrayMesh.ARRAY_INDEX] = indices
+    var mesh := ArrayMesh.new()
+    mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    var mat := StandardMaterial3D.new()
+    mat.albedo_texture = tex
+    mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    mat.vertex_color_use_as_albedo = true
+    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    # Each tile's UVs span the full 0..1 of its texture, so the sampler must
+    # CLAMP: with the default repeat, a pixel on a tile edge filters against
+    # the texture's opposite edge and leaves a hairline seam along every
+    # tile boundary. Scissor rather than blend, so these stay in the opaque
+    # pass and sort by depth -- alpha-blended networks land in the
+    # transparent pass, where per-object ordering let lot aprons and the
+    # network's own base layer draw over the road at intersections.
+    mat.texture_repeat = false
+    mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+    mesh.surface_set_material(0, mat)
+    if node == null:
+        node = MeshInstance3D.new()
+        node.name = "Family_%08X" % iid
+        $Node3D.get_node("Networks").add_child(node)
+        network_family_nodes[iid] = node
+    node.mesh = mesh
+    return true
+
+# Keeps the save's batched meshes in step with the model. Only families that
+# actually contain a changed cell are rebuilt -- at ~40 families over 3,335
+# tiles that is a few hundred quads, not the whole city.
+func _on_network_tiles_changed(dirty : Array) -> void:
+    if network_family_tiles.is_empty():
+        return
+    var changed := false
+    for cell in dirty:
+        var gone : bool = not network_model.has_tile(cell)
+        if gone and not network_removed_cells.has(cell):
+            network_removed_cells[cell] = true
+            changed = true
+        elif not gone and network_removed_cells.has(cell):
+            network_removed_cells.erase(cell)
+            changed = true
+    if not changed:
+        return
+    var families := {}
+    for iid in network_family_tiles.keys():
+        for entry in network_family_tiles[iid]:
+            if dirty.has(entry["cell"]):
+                families[iid] = true
+                break
+    for iid in families.keys():
+        _build_family_mesh(iid)
 
 # Builds the RUL piece catalogue and hands it, the model and the renderer to
 # the build tool. Everything the tool places goes back through NetworkModel, so
@@ -742,7 +826,7 @@ func _top_mismatches(mismatches : Array, by_piece : Dictionary) -> String:
 
 # Reads the bridge/elevated subfile and adds its decks to the network batches.
 # Returns how many tiles were queued.
-func _queue_bridges(by_family : Dictionary) -> int:
+func _queue_bridges() -> int:
     var bindex = savefile.indices_by_type.get(0xca16374f, [])
     if bindex.is_empty():
         return 0
@@ -757,30 +841,10 @@ func _queue_bridges(by_family : Dictionary) -> int:
             continue
         drawn += 1
         if tile.base_texture != 0:
-            _queue_network_quad(by_family, tile.base_texture, tile, 0.0)
+            _register_network_quad(tile.base_texture, tile, 0.0)
         if tile.model_id != 0:
-            _queue_network_quad(by_family, tile.model_id, tile, 0.0)
+            _register_network_quad(tile.model_id, tile, 0.0)
     return drawn
-
-# Appends one tile quad to the batch for `iid`, lifted clear of the terrain.
-func _queue_network_quad(by_family : Dictionary, iid : int, tile, lift : float):
-    if not by_family.has(iid):
-        by_family[iid] = {
-            "verts": PackedVector3Array(),
-            "uvs": PackedVector2Array(),
-            "colors": PackedColorArray(),
-            "indices": PackedInt32Array(),
-        }
-    var batch = by_family[iid]
-    var base = batch["verts"].size()
-    for v in tile.vertices:
-        # Record positions are metres in the same frame as the heightmap.
-        batch["verts"].append(Vector3(v.position.x / TILE_SIZE,
-            v.position.y / TILE_SIZE + lift, v.position.z / TILE_SIZE))
-        batch["uvs"].append(v.uv)
-        batch["colors"].append(v.color)
-    for i in [0, 1, 2, 0, 2, 3]:
-        batch["indices"].append(base + i)
 
 # Parsed water-pipe tiles, and the network index the game keeps over all of the
 # network subfiles at once.
