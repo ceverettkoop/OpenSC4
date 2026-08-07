@@ -416,6 +416,11 @@ func create_terrain():
 # and simulation work.
 var lots : Array = []
 
+# The authoritative lot map, and the single choke point for removing one. The
+# build tools bulldoze through this; everything below rebuilds off its
+# lots_changed signal, exactly as the network meshes follow NetworkModel.
+var lot_model : LotModel = null
+
 func load_lots():
     var lindex = savefile.indices_by_type.get(0xc9bd5d4a, [])
     if lindex.is_empty():
@@ -424,10 +429,16 @@ func load_lots():
     var idx = lindex[0]
     var lsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, LotSubfile)
     lots = lsub.records
-    var zones = {}
+    lot_model = LotModel.new()
+    lot_model.seed_from_save(lots)
+    var growable := 0
     for rec in lots:
-        zones[rec.zone_type] = zones.get(rec.zone_type, 0) + 1
-    Log.info("Lot subfile: %d lots, zone histogram %s" % [lots.size(), zones])
+        if LotModel.is_growable(rec):
+            growable += 1
+    Log.info("Lot subfile: %d lots (%d growable) over %d tiles, zone histogram %s"
+        % [lots.size(), growable, lot_model.by_cell.size(), lot_model.zone_histogram()])
+    # Connected after the visuals exist, in load_lot_structures() -- the handler
+    # rebuilds meshes that are not built yet at this point.
 
 # FSH group holding lot base/overlay ground textures; instance = family + zoom 0..4.
 const LOT_TEXTURE_GROUP : int = 0x0986135e
@@ -451,56 +462,86 @@ func load_lot_textures():
     $Node3D.add_child(root)
 
     # Batch tiles by texture family so each family is one mesh + one material.
-    var by_family = {}
+    # The membership is kept, not just consumed, so bulldozing a lot can rebuild
+    # the families it touched without re-reading the subfile -- the same shape
+    # as network_family_tiles.
     for t in tsub.tiles:
-        if not by_family.has(t.iid):
-            by_family[t.iid] = []
-        by_family[t.iid].append(t)
+        if not lot_texture_tiles.has(t.iid):
+            lot_texture_tiles[t.iid] = []
+        lot_texture_tiles[t.iid].append(t)
 
     var missing = 0
-    for iid in by_family.keys():
-        var tex = _lot_texture(iid)
-        if tex == null:
+    for iid in lot_texture_tiles.keys():
+        if not _build_lot_texture_mesh(iid, root):
             missing += 1
-            continue
-        var verts = PackedVector3Array()
-        var uvs = PackedVector2Array()
-        var colors = PackedColorArray()
-        var indices = PackedInt32Array()
-        for t in by_family[iid]:
-            var lift = 0.015 + 0.004 * (t.priority & 7)   # keep overlays above base
-            var base = verts.size()
-            for corner in [[0, 0], [0, 1], [1, 1], [1, 0]]:
-                var cx = t.x + corner[0]
-                var cz = t.z + corner[1]
-                verts.append(Vector3(cx, _corner_height(cx, cz) + lift, cz))
-                colors.append(t.color)
-            # UV corners for orientation 0, rotated a quarter-turn per step.
-            var uv_corners = [Vector2(0, 0), Vector2(0, 1), Vector2(1, 1), Vector2(1, 0)]
-            for c in range(4):
-                uvs.append(uv_corners[(c + t.orientation) % 4])
-            for i in [0, 1, 2, 0, 2, 3]:
-                indices.append(base + i)
-        var arrays = []
-        arrays.resize(ArrayMesh.ARRAY_MAX)
-        arrays[ArrayMesh.ARRAY_VERTEX] = verts
-        arrays[ArrayMesh.ARRAY_TEX_UV] = uvs
-        arrays[ArrayMesh.ARRAY_COLOR] = colors
-        arrays[ArrayMesh.ARRAY_INDEX] = indices
-        var mesh = ArrayMesh.new()
-        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-        var mat = StandardMaterial3D.new()
-        mat.albedo_texture = tex
-        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-        mat.vertex_color_use_as_albedo = true
-        mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-        mesh.surface_set_material(0, mat)
-        var mi = MeshInstance3D.new()
-        mi.mesh = mesh
-        root.add_child(mi)
     if missing > 0:
         Log.warn("load_lot_textures: %d texture families missing from the DATs" % missing)
+
+# texture family -> Array of LotBaseTextureSubfile tile entries, and family ->
+# the MeshInstance3D drawing them. Kept so one family can be rebuilt when a lot
+# under it is bulldozed.
+var lot_texture_tiles : Dictionary = {}
+var lot_texture_nodes : Dictionary = {}
+# Cells whose lot-texture quads should no longer draw. A bulldozed lot stays in
+# the subfile (which we do not write), so the exclusion is tracked here.
+var lot_removed_cells : Dictionary = {}
+
+# Builds (or rebuilds) one family's mesh from its current membership, skipping
+# bulldozed cells. Returns false when the family's texture is not in the DATs.
+func _build_lot_texture_mesh(iid : int, root : Node3D = null) -> bool:
+    var tex = _lot_texture(iid)
+    if tex == null:
+        return false
+    var verts = PackedVector3Array()
+    var uvs = PackedVector2Array()
+    var colors = PackedColorArray()
+    var indices = PackedInt32Array()
+    for t in lot_texture_tiles[iid]:
+        if lot_removed_cells.has(Vector2i(t.x, t.z)):
+            continue
+        var lift = 0.015 + 0.004 * (t.priority & 7)   # keep overlays above base
+        var base = verts.size()
+        for corner in [[0, 0], [0, 1], [1, 1], [1, 0]]:
+            var cx = t.x + corner[0]
+            var cz = t.z + corner[1]
+            verts.append(Vector3(cx, _corner_height(cx, cz) + lift, cz))
+            colors.append(t.color)
+        # UV corners for orientation 0, rotated a quarter-turn per step.
+        var uv_corners = [Vector2(0, 0), Vector2(0, 1), Vector2(1, 1), Vector2(1, 0)]
+        for c in range(4):
+            uvs.append(uv_corners[(c + t.orientation) % 4])
+        for i in [0, 1, 2, 0, 2, 3]:
+            indices.append(base + i)
+
+    var mi = lot_texture_nodes.get(iid)
+    if verts.is_empty():
+        if mi != null:
+            mi.mesh = null
+        return true
+    var arrays = []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = verts
+    arrays[ArrayMesh.ARRAY_TEX_UV] = uvs
+    arrays[ArrayMesh.ARRAY_COLOR] = colors
+    arrays[ArrayMesh.ARRAY_INDEX] = indices
+    var mesh = ArrayMesh.new()
+    mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    var mat = StandardMaterial3D.new()
+    mat.albedo_texture = tex
+    mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    mat.vertex_color_use_as_albedo = true
+    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+    mesh.surface_set_material(0, mat)
+    if mi == null:
+        mi = MeshInstance3D.new()
+        mi.name = "LotTex_%08X" % iid
+        if root == null:
+            root = $Node3D.get_node_or_null("LotTextures")
+        root.add_child(mi)
+        lot_texture_nodes[iid] = mi
+    mi.mesh = mesh
+    return true
 
 # Resolves a lot-texture family iid to an ImageTexture, preferring the sharpest
 # zoom variant present in the loaded DATs. Returns null if none exist.
@@ -751,8 +792,6 @@ func _on_network_tiles_changed(dirty : Array) -> void:
         # Dragging a road across one of the save's roads leaves a drawn
         # intersection on that cell, and the save's own straight quad underneath
         # it both z-fights and shows the old shape through the new one.
-        # Restoring the tile on undo puts a SOURCE_SAVE tile back and un-hides
-        # it again.
         var hidden : bool = tile == null or tile.source != NetworkModel.SOURCE_SAVE
         if hidden and not network_removed_cells.has(cell):
             network_removed_cells[cell] = true
@@ -785,7 +824,8 @@ func _setup_network_tool():
         renderer.setup(network_pieces, network_model)
     network_tool = get_node_or_null("NetworkTool")
     if network_tool != null:
-        network_tool.setup(network_model, renderer, network_pieces, size_w * 64, size_h * 64)
+        network_tool.setup(network_model, renderer, network_pieces,
+            size_w * 64, size_h * 64, lot_model)
         _setup_tool_hud()
 
 # A one-line readout in the otherwise empty UICanvas. Without it the tool is
@@ -813,7 +853,7 @@ func _on_tool_mode_changed(_mode : int):
     var detail := ""
     if network_tool.mode == NetworkTool.Mode.DRAW:
         detail = "  [%s]  [ ] to change" % network_tool.network
-    tool_label.text = "Tool: %s%s      R draw  B bulldoze  Esc off  Ctrl+Z undo  G graph" \
+    tool_label.text = "Tool: %s%s      R draw  B bulldoze  Esc off  G graph" \
         % [network_tool.mode_name(), detail]
 
 # One line per disagreeing piece: what the paths claim vs what the save says.
@@ -1106,6 +1146,55 @@ func load_lot_structures():
         Log.info("Lot %s: %d records, %d present, %d layout failures"
             % [entry[1], sub.structures.size(), present.size(), sub.layout_failures])
         _draw_lot_structures(present, entry[1])
+    # Everything a lot draws now exists, so the model can start driving it.
+    if lot_model != null:
+        lot_model.lots_changed.connect(_on_lots_changed)
+
+# Brings every renderer that draws part of a lot in line with the model.
+#
+# `dirty` is the set of cells the mutation freed. Lot removal is one-way, so
+# this only ever takes geometry away.
+func _on_lots_changed(dirty : Array) -> void:
+    if lot_model == null:
+        return
+    var changed := {}
+    for cell in dirty:
+        if lot_model.has_lot(cell) or lot_removed_cells.has(cell):
+            continue
+        lot_removed_cells[cell] = true
+        changed[cell] = true
+    if changed.is_empty():
+        return
+
+    for cell in changed.keys():
+        _free_occupants_at(cell)
+
+    # Only families that actually hold a changed cell are rebuilt.
+    var texture_families := {}
+    for iid in lot_texture_tiles.keys():
+        for t in lot_texture_tiles[iid]:
+            if changed.has(Vector2i(t.x, t.z)):
+                texture_families[iid] = true
+                break
+    for iid in texture_families.keys():
+        _build_lot_texture_mesh(iid)
+
+    var structure_families := {}
+    for key in lot_structure_items.keys():
+        for s in lot_structure_items[key]:
+            if changed.has(occupant_cell(s)):
+                structure_families[key] = true
+                break
+    for key in structure_families.keys():
+        _build_lot_structure_mesh(key)
+
+func _free_occupants_at(cell : Vector2i) -> void:
+    for node in occupant_nodes.get(cell, []):
+        if is_instance_valid(node):
+            animated_sprites.erase(node)
+            node.get_parent().remove_child(node)
+            node.queue_free()
+    occupant_nodes.erase(cell)
 
 # Batches structures by texture and emits the sides of each box.
 func _draw_lot_structures(items : Array, what : String):
@@ -1120,7 +1209,7 @@ func _draw_lot_structures(items : Array, what : String):
     # The population is mixed: most of these exemplars carry a wall/concrete
     # texture to stretch over a box, but some carry an RKT1 S3D model instead
     # (group 0xBADB57F1) and go through the ordinary occupant pipeline.
-    var by_texture = {}
+    var families = {}
     var modelled = []
     for s in items:
         var skin = _lot_structure_skin(s.exemplar_tgi)
@@ -1128,33 +1217,63 @@ func _draw_lot_structures(items : Array, what : String):
             modelled.append(s)
             continue
         var key = skin["iid"]
-        if not by_texture.has(key):
-            by_texture[key] = {"skin": skin, "verts": PackedVector3Array(),
-                "uvs": PackedVector2Array(), "indices": PackedInt32Array()}
-        _queue_structure_box(by_texture[key], s, skin["tiling"])
+        if not lot_structure_items.has(key):
+            lot_structure_items[key] = []
+            lot_structure_batch_skins[key] = skin
+        lot_structure_items[key].append(s)
+        families[key] = true
     if not modelled.is_empty():
         _place_occupants(modelled, what + " (modelled)")
 
-    for key in by_texture.keys():
-        var batch = by_texture[key]
-        var arrays = []
-        arrays.resize(ArrayMesh.ARRAY_MAX)
-        arrays[ArrayMesh.ARRAY_VERTEX] = batch["verts"]
-        arrays[ArrayMesh.ARRAY_TEX_UV] = batch["uvs"]
-        arrays[ArrayMesh.ARRAY_INDEX] = batch["indices"]
-        var mesh = ArrayMesh.new()
-        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-        var mat = StandardMaterial3D.new()
-        mat.albedo_texture = batch["skin"]["texture"]
-        mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-        mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-        mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-        mesh.surface_set_material(0, mat)
-        var mi = MeshInstance3D.new()
-        mi.mesh = mesh
-        root.add_child(mi)
+    for key in families.keys():
+        _build_lot_structure_mesh(key, root)
     Log.info("Drew %d textured %s (%d texture families); %d were modelled instead"
-        % [items.size() - modelled.size(), what, by_texture.size(), modelled.size()])
+        % [items.size() - modelled.size(), what, families.size(), modelled.size()])
+
+# texture iid -> the structures batched under it, its skin, and the node drawing
+# them. Same reason as lot_texture_tiles: a bulldozed lot has to be able to take
+# its foundations and retaining walls with it.
+var lot_structure_items : Dictionary = {}
+var lot_structure_batch_skins : Dictionary = {}
+var lot_structure_nodes : Dictionary = {}
+
+# Builds (or rebuilds) one texture's batch, skipping structures whose tile has
+# been bulldozed.
+func _build_lot_structure_mesh(key : int, root : Node3D = null) -> void:
+    var batch = {"verts": PackedVector3Array(), "uvs": PackedVector2Array(),
+        "indices": PackedInt32Array()}
+    var skin = lot_structure_batch_skins[key]
+    for s in lot_structure_items[key]:
+        if lot_removed_cells.has(occupant_cell(s)):
+            continue
+        _queue_structure_box(batch, s, skin["tiling"])
+
+    var mi = lot_structure_nodes.get(key)
+    if batch["verts"].is_empty():
+        if mi != null:
+            mi.mesh = null
+        return
+    var arrays = []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = batch["verts"]
+    arrays[ArrayMesh.ARRAY_TEX_UV] = batch["uvs"]
+    arrays[ArrayMesh.ARRAY_INDEX] = batch["indices"]
+    var mesh = ArrayMesh.new()
+    mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    var mat = StandardMaterial3D.new()
+    mat.albedo_texture = skin["texture"]
+    mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+    mesh.surface_set_material(0, mat)
+    if mi == null:
+        mi = MeshInstance3D.new()
+        mi.name = "LotStruct_%08X" % key
+        if root == null:
+            root = $Node3D.get_node_or_null("LotStructures")
+        root.add_child(mi)
+        lot_structure_nodes[key] = mi
+    mi.mesh = mesh
 
 # Emits the four vertical faces of one structure. The record's altitude is the
 # top (the lot surface); the box drops from there by its height.
@@ -1276,6 +1395,7 @@ func _place_occupants(recs : Array, what : String):
     var sprites = 0
     var no_model = 0
     for rec in recs:
+        var cell := occupant_cell(rec)
         var ref = _model_ref_for_exemplar(rec.exemplar_tgi)
         if ref == null:
             # No 3D model: the occupant may still be one of SC4's 2D sprite
@@ -1300,9 +1420,28 @@ func _place_occupants(recs : Array, what : String):
         var z = rec.pos_z / TILE_SIZE
         mi.position = Vector3(x, _height_at(x, z), z)
         building_root.add_child(mi)
+        _track_occupant_node(cell, mi)
         placed += 1
     Log.info("Placed %d %s, %d as 2D sprites (%d without a resolvable model)"
         % [placed, what, sprites, no_model])
+
+# Every node placed for an occupant, indexed by the tile it stands on.
+# Buildings, props, flora, sprite props and modelled foundations all land in one
+# flat list under building_root/sprite_root with nothing saying which lot they
+# belong to, so this is the only route from "bulldoze this lot" to the geometry
+# that has to go.
+var occupant_nodes : Dictionary = {}        # Vector2i -> Array of Node3D
+
+# An occupant's tile. Positions are metres at the occupant's own origin, which
+# for a multi-tile building is its centre, so this is the tile the record sits
+# on rather than every tile its lot covers -- the lot rect provides those.
+static func occupant_cell(rec) -> Vector2i:
+    return Vector2i(int(rec.pos_x / TILE_SIZE), int(rec.pos_z / TILE_SIZE))
+
+func _track_occupant_node(cell : Vector2i, node : Node3D) -> void:
+    if not occupant_nodes.has(cell):
+        occupant_nodes[cell] = []
+    occupant_nodes[cell].append(node)
 
 # SC4 building models are referenced via ResourceKeyType1 (RKT1, exemplar property
 # 0x27812821): the stored instance id is a BASE, and the real S3D models fan out as
@@ -1465,6 +1604,7 @@ func _place_sprite(rec) -> bool:
     var z = rec.pos_z / TILE_SIZE
     mi.position = Vector3(x, _height_at(x, z), z)
     sprite_root.add_child(mi)
+    _track_occupant_node(occupant_cell(rec), mi)
     if not ref["states_as_frames"] and _sprite_is_animated(anim):
         animated_sprites.append(mi)
     return true

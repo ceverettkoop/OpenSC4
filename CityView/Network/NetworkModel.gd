@@ -13,6 +13,10 @@ extends RefCounted
 # Every mutation returns, and emits, the set of cells it disturbed. That set is
 # always larger than the cells actually written: removing a tile changes the
 # shape of its orthogonal neighbours too, and they have to be re-resolved.
+#
+# Mutations are one-way. There is no undo anywhere in the editing stack, so
+# nothing here snapshots prior state and remove() edits surviving neighbours'
+# edge codes in place.
 class_name NetworkModel
 
 const PATH_TYPE : int = 0x296678f7
@@ -76,23 +80,6 @@ class Tile:
                 out.append(side)
         return out
 
-    # A detached copy, for the undo snapshot. remove() edits a surviving
-    # neighbour's wnes in place, so storing the reference would snapshot the
-    # object we are about to change and undo would restore nothing.
-    func clone() -> Tile:
-        var copy := Tile.new()
-        copy.cell = cell
-        copy.network_types = network_types.duplicate()
-        copy.piece_id = piece_id
-        copy.base_texture = base_texture
-        copy.orientation = orientation
-        copy.wnes = wnes.duplicate()
-        copy.crossings = crossings
-        copy.base_height = base_height
-        copy.source = source
-        copy.save_index = save_index
-        return copy
-
 signal tiles_changed(dirty : Array)
 
 var tiles : Dictionary = {}          # Vector2i -> Tile
@@ -100,9 +87,6 @@ var tiles : Dictionary = {}          # Vector2i -> Tile
 # because resolving a miss costs a dictionary probe in Core either way, and the
 # 3,335 tiles of a real city share only a few dozen pieces.
 var _path_cache : Dictionary = {}
-# Each entry is the full prior state of the cells one mutation touched, so
-# undo() is a straight restore rather than an inverse operation.
-var _undo_stack : Array = []
 
 func size() -> int:
     return tiles.size()
@@ -172,13 +156,10 @@ func _apply_crossings(tile : Tile) -> void:
 # Adds or replaces tiles. Returns every cell whose appearance or connectivity
 # may have changed, which includes the orthogonal neighbours of each placement.
 func place(records : Array) -> Array:
-    var prior := {}
     var dirty := {}
     for tile in records:
-        _remember(prior, tile.cell)
         tiles[tile.cell] = tile
         _mark(dirty, tile.cell)
-    _push_undo(prior)
     var out = dirty.keys()
     tiles_changed.emit(out)
     return out
@@ -187,13 +168,11 @@ func place(records : Array) -> Array:
 # lost its continuation no longer claims to connect that way. Returns the dirty
 # set: the removed cells plus every neighbour that had to change.
 func remove(cells : Array) -> Array:
-    var prior := {}
     var dirty := {}
     var gone : Array = []
     for cell in cells:
         if not tiles.has(cell):
             continue
-        _remember(prior, cell)
         tiles.erase(cell)
         gone.append(cell)
         _mark(dirty, cell)
@@ -210,51 +189,11 @@ func remove(cells : Array) -> Array:
             var facing := opposite(side)
             if neighbour.wnes[facing] == 0:
                 continue
-            _remember(prior, other)
             neighbour.wnes[facing] = 0
             _mark(dirty, other)
-    _push_undo(prior)
     var out = dirty.keys()
     tiles_changed.emit(out)
     return out
-
-# Restores the state before the last place() or remove(). Returns the dirty set.
-func undo() -> Array:
-    if _undo_stack.is_empty():
-        return []
-    var prior : Dictionary = _undo_stack.pop_back()
-    var dirty := {}
-    for cell in prior.keys():
-        var tile = prior[cell]
-        if tile == null:
-            tiles.erase(cell)
-        else:
-            tiles[cell] = tile
-    # Dirty the neighbours too, not just the cells written. place() and
-    # remove() both do, and the set has to be the same shape going back as it
-    # was going forward: a neighbour that was re-derived when the tile went
-    # away has to be re-derived again when it returns, or the graph keeps the
-    # arcs it grew while the tile was missing.
-    for cell in prior.keys():
-        _mark(dirty, cell)
-    var out = dirty.keys()
-    tiles_changed.emit(out)
-    return out
-
-func can_undo() -> bool:
-    return not _undo_stack.is_empty()
-
-# Snapshots a cell before it is written, once per mutation. Records null for a
-# cell that did not exist, so undo() knows to erase rather than restore.
-func _remember(prior : Dictionary, cell : Vector2i) -> void:
-    if prior.has(cell):
-        return
-    var existing = tiles.get(cell)
-    prior[cell] = existing.clone() if existing != null else null
-
-func _push_undo(prior : Dictionary) -> void:
-    if not prior.is_empty():
-        _undo_stack.append(prior)
 
 # A cell and its four orthogonal neighbours all need re-resolving when it changes.
 func _mark(dirty : Dictionary, cell : Vector2i) -> void:

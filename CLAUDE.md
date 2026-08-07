@@ -30,7 +30,13 @@ OpenSC4 is an open-source **Godot 4.7 (GDScript)** reimplementation of *SimCity 
   all building view variants; a clean run ends with `SWEEP COMPLETE`. It **exits 1** if a
   network check fails, so it is usable as a regression gate. The build-tool checks draw on
   clear ground *and* drag a road across one of the save's roads (`_check_crossing`), which
-  is the case a clear-ground-only test cannot reach. Known failure: **Getting Started
+  is the case a clear-ground-only test cannot reach, *and* raze lots with both the road and
+  the bulldozer (`_check_lot_bulldoze` — including that a plopped lot survives a road drawn
+  over it). **The checks run in sequence on one city and every edit is permanent**, so each
+  captures its own before-state and later ones must not assume the city is as the save left
+  it — a check that needs a fresh lot asks `_find_clear_lot` for another. Round trips are
+  gone with undo; the equivalent coverage is `incremental placement matches a full rebuild`,
+  which is what actually catches a boundary coming apart. Known failure: **Getting Started
   Tutorial** fails the graph checks — its entire network is one orphan street tile with no
   connections, so there are no arcs to check. Pre-existing and unrelated to the tool.
 - SC4Path parser harness (headless): `godot --headless --path . res://tools/DumpPaths.tscn`
@@ -127,7 +133,10 @@ Everything flows through this singleton.
   0x0986135E, instance = family + zoom 0..4); `LotSubfile` (0xC9BD5D4A) is data-only
   (tile rect, zoning, wealth — SC4 denormalizes lot visuals into the other subfiles).
   All are rendered/loaded from `City.gd` (`load_buildings/load_props/load_flora/`
-  `load_lot_textures/load_lots`).
+  `load_lot_textures/load_lots`). Because a lot's visuals are scattered over five
+  subfiles with nothing linking them back to the lot, **`CityView/Lots/LotModel.gd`** is
+  the authority on which lot owns which tile and the only place a lot is removed — see
+  the Lots subsystem below.
 - `GZWin*.gd` (`GZWin`, `GZWinBtn`, `GZWinText`, `GZWinBMP`, `GZWinFlatRect`, `GZWinGen`) —
   Godot `Control` wrappers for SC4's UI primitives.
 - **To add a new SC4 file format:** create a new `extends DBPFSubfile` class in `addons/dbpf/`
@@ -148,9 +157,11 @@ Everything flows through this singleton.
   plane (`CityView/Meshes/WaterPlane.gd`), and an S3D model demo.
 - **Transport network** (`CityView/Network/`): `NetworkModel.gd` is the authoritative
   `Vector2i -> Tile` map of what network sits where. It is seeded from the save in
-  `City.load_networks()` and is the single choke point for mutation (`place`/`remove`/`undo`,
-  each returning and emitting the dirty cell set), so the renderer and the graph cannot drift
-  apart. Note a tile's connected edges are the **union of all `crossings` entries**, not just
+  `City.load_networks()` and is the single choke point for mutation (`place`/`remove`, each
+  returning and emitting the dirty cell set), so the renderer and the graph cannot drift
+  apart. **Edits are one-way — there is no undo anywhere in the editing stack** (not in
+  `NetworkModel`, `LotModel` or `NetworkTool`), so nothing snapshots prior state and
+  `remove()` relaxes surviving neighbours' edge codes in place. Note a tile's connected edges are the **union of all `crossings` entries**, not just
   `crossings[0]` — a level crossing puts its second network in `crossings[1..]`. Avenues are
   one network two tiles wide and are handled as a special case throughout.
   `NetworkGraph.gd` derives the routable graph from it and follows every later edit off
@@ -172,11 +183,11 @@ Everything flows through this singleton.
   `NetworkPieceDB.gd` loads the 24 RUL files into a piece catalogue keyed by network and
   WNES signature, `NetworkRenderer.gd` (was `TransitTiles.gd`) solves a drag into tiles and
   meshes, and `NetworkTool.gd` owns input and modes. **Keys: R draw, B bulldoze, Esc off,
-  `[`/`]` change network, Ctrl+Z undo, G graph overlay.** The tool starts in NONE — before
+  `[`/`]` change network, G graph overlay.** The tool starts in NONE — before
   the split, a left-click anywhere in the city unconditionally paved a road. Everything it
   places or removes goes through `NetworkModel`, so the graph follows without the tool
   knowing the graph exists. Each drag operation also has a plain method behind it
-  (`draw_line`, `bulldoze`, `bulldoze_box`, `undo`) so harnesses can drive it without a mouse.
+  (`draw_line`, `bulldoze`, `bulldoze_box`) so harnesses can drive it without a mouse.
   Drawn roads used to render solid black: the face normals were inverted (`v.cross(u)` on
   two counter-clockwise windings), so a sun overhead lit nothing and this scene's ambient
   comes from a background with a 0 energy multiplier. The transit shader is `unshaded` now
@@ -188,13 +199,13 @@ Everything flows through this singleton.
   still looked continuous, because the save's own quad was still drawn underneath, while
   the model record claimed two edges instead of four, so its arcs stopped dead at the
   junction. `City._on_network_tiles_changed` therefore withdraws a save quad when the tile
-  is *replaced* as well as when it is bulldozed, and `NetworkRenderer.resync` gives the cell
-  back on undo. Crossing a **different** network keeps the other network's `crossings`
-  entry so the model does not lose it, but the piece still comes from the drag network's
-  RUL table — real level-crossing pieces are not implemented.
+  is *replaced* as well as when it is bulldozed. Crossing a **different** network keeps the
+  other network's `crossings` entry so the model does not lose it, but the piece still comes
+  from the drag network's RUL table — real level-crossing pieces are not implemented.
   The three incremental-graph defects recorded here previously (Making Money Tutorial's
   `incremental removal matches a full rebuild`, Tegel/Kensington's `undo restored the graph
-  exactly`) were **one bug in `NetworkGraph._drop_boundary`**, which erased a boundary's
+  exactly`, back when undo existed) were **one bug in `NetworkGraph._drop_boundary`**,
+  which erased a boundary's
   whole node roster. A portal still carrying an undisturbed neighbour's arcs survived in
   `nodes` but vanished from `nodes_by_boundary`, so the next `_stitch_boundary` saw only
   the freshly emitted half and had nothing to pair it with — a boundary that was joined
@@ -202,6 +213,27 @@ Everything flows through this singleton.
   `_ensure_node` registers idempotently. All nine populated saves pass.
   `CityView/ClassDefinitions/` still holds the older, unwired sketches (`NetGraphNode`,
   `NetGraphEdge`, `NetTile`), kept only because `NetworkRenderer.gd` still references them.
+- **Lots** (`CityView/Lots/LotModel.gd`): `Vector2i -> LotRecord`, and the single choke
+  point for removing a lot — the same role `NetworkModel` plays for network tiles, for the
+  same reason. A lot draws through **five** subfiles (buildings, props, flora, base
+  textures, foundations/retaining walls) and none of them records which lot it belongs to,
+  so removal has to happen in one place or a bulldozed lot leaves its building standing on
+  the road, or its lawn, or its foundations. `City.gd` follows `lots_changed`
+  (`_on_lots_changed`) and rebuilds only the affected batches: `lot_texture_tiles` /
+  `lot_structure_items` keep their membership so a family can be re-emitted minus the dead
+  cells, and `occupant_nodes` indexes every placed occupant node by tile, which is the only
+  route from "bulldoze this lot" to the geometry that has to go.
+  **Only growable lots are bulldozable by the tools.** `zone_type` 1–9 (R/C/I by density)
+  is growable; 15 and the special zones are plopped and a road will not eat them —
+  `LotModel.is_growable` is the whole test. A lot always comes out **whole**, even when a
+  road only clips its corner: half a lot has no meaning in any of the subfiles.
+  `NetworkTool` razes lots on both paths — a drag calls `_raze_lots(renderer.pending_cells())`
+  before committing the tiles, and the bulldozer boxes over lots whether or not a network
+  tile is there (`bulldoze_box_cells` is the whole box now; `bulldoze_cells` is the subset
+  holding tiles). Razing is **permanent** — there is no undo, so a bulldozed lot's
+  occupants are freed outright rather than kept for a restore.
+  **Not implemented:** the draw preview highlights the road but not the lots it is about
+  to flatten (the bulldoze preview does show them, whole lots included).
 - **DAT Explorer** (`DATExplorer/`): a `Tree` browser over loaded DBPF archives with TGI
   filters and subfile previews. Dev tool.
 

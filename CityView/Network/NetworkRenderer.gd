@@ -152,6 +152,15 @@ func preview_bulldoze(cells : Array) -> void:
     drag_meshinst.set_material_override(null)
     drag_meshinst.mesh = mesh_out
 
+# The cells the pending drag would occupy, before it is committed. The tool
+# uses it to clear the lots in the way first; the solver's own working keys are
+# float Vector2, so this is the conversion point like everything else here.
+func pending_cells() -> Array:
+    var out : Array = []
+    for loc in drag_tiles.keys():
+        out.append(Vector2i(int(loc.x), int(loc.y)))
+    return out
+
 # Commits the pending drag: bakes the geometry and registers the tiles with the
 # model, which is what makes the graph follow. Returns the dirty cells.
 func commit_draw() -> Array:
@@ -223,19 +232,6 @@ func forget_cells(cells : Array) -> void:
     if touched:
         _rebuild_built_mesh(cells)
 
-# Brings the drawn mesh back in line with the model, after an undo.
-#
-# An undo can hand a cell back to the save. Undoing a drag that crossed one of
-# the save's roads restores the SOURCE_SAVE tile, and City.gd puts its quad back
-# on screen; the drawn intersection has to stop being ours at the same moment or
-# the cell draws twice.
-func resync(cells : Array) -> void:
-    for cell in cells:
-        var tile = model.get_tile(cell) if model != null else null
-        if tile != null and tile.source == NetworkModel.SOURCE_SAVE:
-            network_tiles.erase(Vector2(cell.x, cell.y))
-    _rebuild_built_mesh(cells)
-
 # Rebuilds the committed mesh, dropping any quad whose cell no longer holds a
 # tile. built_tracker records the cell each vertex belongs to, so this is a
 # filter rather than a re-solve.
@@ -248,9 +244,9 @@ func _rebuild_built_mesh(_cells : Array) -> void:
         # Keep the quad while this renderer still owns the cell. The model check
         # is the second half of that, not a fallback to the model's authority:
         # a multi-tile piece tracks quads at sub-tile locations that are not
-        # keys in network_tiles. A cell the model has handed BACK to the save is
-        # explicitly not ours -- City.gd is drawing it again from the batched
-        # save mesh, so keeping the drawn quad too would draw the cell twice.
+        # keys in network_tiles, and only the model knows those are still live.
+        # A cell holding a SAVE tile is explicitly not ours -- City.gd draws
+        # that one from its own batched mesh.
         var tile = model.get_tile(Vector2i(int(loc.x), int(loc.y))) if model != null else null
         if network_tiles.has(loc) or (tile != null and tile.source != NetworkModel.SOURCE_SAVE):
             keep.append(i)

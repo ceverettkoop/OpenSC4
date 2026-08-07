@@ -266,12 +266,184 @@ func _check_graph(city, model) -> bool:
     ok = _check_incremental(city, model, graph) and ok
     ok = _check_tool(city, model, graph) and ok
     ok = _check_crossing(city, model, graph) and ok
+    ok = _check_lot_bulldoze(city, model) and ok
     return ok
+
+# Drawing a road over a zoned building, and bulldozing lots directly.
+#
+# A lot's visuals are scattered over five subfiles with nothing linking them
+# back to the lot, so "remove this lot" has to take all of them at once or the
+# building stays standing on a road, or its lawn does, or its foundations do.
+# These check each of those independently rather than trusting one of them to
+# imply the rest.
+func _check_lot_bulldoze(city, model) -> bool:
+    var tool = city.network_tool
+    var lots = city.lot_model
+    if tool == null or lots == null:
+        print("  note  no build tool or no lot subfile")
+        return true
+
+    print("\n--- lot bulldozing ---")
+    var ok := true
+    var site = _find_clear_lot(city, model, true)
+    if site == null:
+        print("  note  no growable lot on network-free ground to draw over")
+    else:
+        ok = _check_raze_by_road(city, lots, tool, site) and ok
+
+    # A fresh lot each time -- _find_clear_lot skips the ones already gone,
+    # because edits are permanent and nothing puts the last one back.
+    var box_site = _find_clear_lot(city, model, true)
+    if box_site == null:
+        print("  note  no second growable lot to bulldoze directly")
+    else:
+        ok = _check_bulldoze_lot(city, lots, tool, box_site) and ok
+
+    # A plopped lot is not growable and a road must not eat it.
+    var plopped = _find_clear_lot(city, model, false)
+    if plopped == null:
+        print("  note  no plopped lot on network-free ground")
+    else:
+        var cell : Vector2i = plopped["cells"][0]
+        tool.draw_line(Vector2i(plopped["min_x"], cell.y),
+            Vector2i(plopped["max_x"], cell.y), "Road")
+        # Only this lot's own survival is the claim. The road stays inside its
+        # rect, but a plopped lot can still border growable ones, and those are
+        # fair game.
+        if lots.has_lot(cell):
+            print("  ok    a road drawn over the plopped lot at %s left it standing (zone %d)"
+                % [cell, plopped["lot"].zone_type])
+        else:
+            push_error("a road razed the PLOPPED lot at %s (zone %d)"
+                % [cell, plopped["lot"].zone_type])
+            ok = false
+    return ok
+
+func _check_raze_by_road(city, lots, tool, site) -> bool:
+    var ok := true
+    var lot = site["lot"]
+    var cells : Array = site["cells"]
+    # The cell carrying the most geometry, so the assertions have something to
+    # measure rather than passing vacuously on an empty corner of the lot.
+    var busiest : Vector2i = cells[0]
+    for cell in cells:
+        if city.occupant_nodes.get(cell, []).size() > city.occupant_nodes.get(busiest, []).size():
+            busiest = cell
+    var nodes_before : int = city.occupant_nodes.get(busiest, []).size()
+    var lots_before : int = lots.size()
+    var family : int = _lot_texture_family_at(city, busiest)
+    var tex_before : int = _mesh_vertex_count(city.lot_texture_nodes.get(family))
+
+    # Along one row of the lot and no further. Running a tile past either end
+    # would clip whatever is next door, and then "how many lots went" stops
+    # being a statement about this one.
+    var row : int = cells[0].y
+    var run : Array = []
+    for x in range(site["min_x"], site["max_x"] + 1):
+        run.append(Vector2i(x, row))
+    var expected : int = lots.lots_over(run, true).size()
+    tool.draw_line(run[0], run[run.size() - 1], "Road")
+
+    if not lots.has_lot(busiest):
+        print("  ok    a road drawn across the growable lot at %s razed it (zone %d, %d tiles)"
+            % [busiest, lot.zone_type, cells.size()])
+    else:
+        push_error("a road drawn across the growable lot at %s left it in the model" % busiest)
+        ok = false
+    if lots.size() != lots_before - expected:
+        push_error("razing %d lot(s) took the count from %d to %d"
+            % [expected, lots_before, lots.size()])
+        ok = false
+
+    # The whole lot goes, not just the tiles the road actually crossed.
+    var still_there : Array = []
+    for cell in cells:
+        if not city.lot_removed_cells.has(cell):
+            still_there.append(cell)
+    if still_there.is_empty():
+        print("  ok    all %d of the lot's tiles were withdrawn, not just the crossed row"
+            % cells.size())
+    else:
+        push_error("%d of the lot's tiles were left drawing: %s"
+            % [still_there.size(), still_there.slice(0, 5)])
+        ok = false
+
+    if nodes_before > 0:
+        var nodes_after : int = city.occupant_nodes.get(busiest, []).size()
+        if nodes_after == 0:
+            print("  ok    its %d occupant node(s) at %s were freed" % [nodes_before, busiest])
+        else:
+            push_error("%d occupant node(s) still standing at %s" % [nodes_after, busiest])
+            ok = false
+    else:
+        print("  note  no occupant nodes on the razed lot to check")
+
+    if family != 0 and tex_before > 0:
+        var tex_after : int = _mesh_vertex_count(city.lot_texture_nodes.get(family))
+        if tex_after < tex_before:
+            print("  ok    its ground texture shrank (%d -> %d vertices)" % [tex_before, tex_after])
+        else:
+            push_error("the razed lot's ground texture is unchanged (%d vertices)" % tex_after)
+            ok = false
+
+    return ok
+
+# The bulldozer takes a lot on its own, with no network tile in the box. Needs
+# its own lot: the road check above razed its one for good.
+func _check_bulldoze_lot(city, lots, tool, site) -> bool:
+    var ok := true
+    var cells : Array = site["cells"]
+    var cell : Vector2i = cells[0]
+    var razed = tool.bulldoze(cells)
+    if lots.has_lot(cell):
+        push_error("bulldozing %s left the lot in the model" % cells.slice(0, 3))
+        ok = false
+    elif not razed.is_empty():
+        push_error("bulldozing a lot on bare ground reported %d network cells" % razed.size())
+        ok = false
+    else:
+        print("  ok    the bulldozer removed the lot at %s with no network tile in the box" % cell)
+    return ok
+
+# The lot-texture family covering `cell`, or 0.
+func _lot_texture_family_at(city, cell : Vector2i) -> int:
+    for iid in city.lot_texture_tiles.keys():
+        for t in city.lot_texture_tiles[iid]:
+            if t.x == cell.x and t.z == cell.y:
+                return iid
+    return 0
+
+# A lot whose whole rect is free of network tiles, so drawing across it is a
+# clean test rather than a road merge. `growable` picks which kind.
+func _find_clear_lot(city, model, growable : bool):
+    for lot in city.lot_model.lots:
+        if LotModel.is_growable(lot) != growable:
+            continue
+        if not city.lot_model.has_lot(Vector2i(lot.min_x, lot.min_z)):
+            continue
+        var cells := LotModel.cells_of(lot)
+        var clear := true
+        for cell in cells:
+            # The lot must own every tile it claims -- overlapping rects would
+            # make "the whole lot went" ambiguous.
+            if model.has_tile(cell) or city.lot_model.lot_at(cell) != lot:
+                clear = false
+                break
+        if not clear:
+            continue
+        # Room either side for the road to start and end on.
+        if lot.min_x < 2 or lot.max_x > city.size_w * 64 - 3:
+            continue
+        return {"lot": lot, "cells": cells, "min_x": lot.min_x, "max_x": lot.max_x}
+    return null
 
 # Drives the build tool the way a user would, without a mouse, and checks the
 # graph follows. This is the end-to-end assertion for the whole feature: a road
-# drawn on empty ground has to become connected arcs, bulldozing its middle has
-# to split it, and undo has to put it back.
+# drawn on empty ground has to become connected arcs, and bulldozing its middle
+# has to split it.
+#
+# Every edit here is permanent, so the checks that follow this one capture their
+# own before-state rather than assuming the city is as the save left it.
 const DRAWN_RUN : int = 8
 
 func _check_tool(city, model, graph) -> bool:
@@ -288,7 +460,6 @@ func _check_tool(city, model, graph) -> bool:
 
     var before_tiles : int = model.size()
     var before_arcs : int = graph.arc_count()
-    var before_fingerprint : int = graph.fingerprint()
 
     var finish := Vector2i(start.x + DRAWN_RUN - 1, start.y)
     tool.draw_line(start, finish, "Road")
@@ -346,20 +517,16 @@ func _check_tool(city, model, graph) -> bool:
             push_error("bulldozing %s did not split the run (%d -> %d components)"
                 % [middle, before_components, after_components])
             ok = false
-        tool.undo()
-        if not model.has_tile(middle):
-            push_error("undo did not restore the bulldozed tile")
-            ok = false
 
     ok = _check_save_tile_bulldoze(city, model, tool) and ok
 
-    # Undo the draw itself and confirm we are exactly back where we started.
-    model.undo()
-    if model.size() == before_tiles and graph.fingerprint() == before_fingerprint:
-        print("  ok    undo restored the city to %d tiles and the original graph" % before_tiles)
+    # The drawn road stays. Edits are permanent, so every check after this one
+    # captures its own before-state rather than assuming a pristine city.
+    var problems_after = graph.validate()
+    if problems_after.is_empty():
+        print("  ok    graph still sound after the draw and bulldoze sequence")
     else:
-        push_error("after undo: %d tiles (want %d), fingerprint %d (want %d)"
-            % [model.size(), before_tiles, graph.fingerprint(), before_fingerprint])
+        push_error("graph unsound after the tool sequence: %s" % problems_after.slice(0, 3))
         ok = false
     return ok
 
@@ -391,7 +558,6 @@ func _check_crossing(city, model, graph) -> bool:
         return true
     var cell : Vector2i = site["cell"]
     var axis : Vector2i = site["axis"]          # the drag runs along this
-    var before_fingerprint : int = graph.fingerprint()
     var before_source : int = model.get_tile(cell).source
 
     var from : Vector2i = cell - axis * CROSS_ARM
@@ -456,18 +622,15 @@ func _check_crossing(city, model, graph) -> bool:
             push_error("the save still draws its own quad under the new intersection at %s" % cell)
             ok = false
 
-    tool.undo()
-    if model.get_tile(cell) == null or model.get_tile(cell).source != before_source:
-        push_error("undo did not give %s back to the save" % cell)
-        ok = false
-    elif graph.fingerprint() != before_fingerprint:
-        push_error("undoing the crossing left the graph changed")
-        ok = false
-    elif city.network_removed_cells.has(cell):
-        push_error("undo restored the tile but left the save's quad withdrawn at %s" % cell)
-        ok = false
+    # The incremental graph must agree with a rebuild after the crossing, which
+    # is what a round trip used to prove indirectly.
+    var incremental : int = graph.fingerprint()
+    graph.rebuild()
+    if graph.fingerprint() == incremental:
+        print("  ok    the crossed junction matches a full graph rebuild")
     else:
-        print("  ok    undo restored the crossed road exactly")
+        push_error("after crossing %s, the incremental graph disagrees with a full rebuild" % cell)
+        ok = false
     return ok
 
 # A straight two-edge road tile whose perpendicular neighbours are clear for
@@ -519,7 +682,6 @@ func _check_save_tile_bulldoze(city, model, tool) -> bool:
     var family : int = model.tiles[victim].piece_id
     var node = city.network_family_nodes[family]
     var before : int = _mesh_vertex_count(node)
-    var before_graph : int = city.network_graph.fingerprint()
     tool.bulldoze([victim])
     var after : int = _mesh_vertex_count(node)
     var ok := true
@@ -532,17 +694,6 @@ func _check_save_tile_bulldoze(city, model, tool) -> bool:
     else:
         push_error("bulldozing save tile %s left its quad in the mesh (%d vertices, unchanged)"
             % [victim, after])
-        ok = false
-    tool.undo()
-    if not model.has_tile(victim):
-        push_error("undo did not restore the bulldozed save tile")
-        ok = false
-    elif _mesh_vertex_count(node) != before:
-        push_error("undo restored the tile but not its quad (%d vertices, want %d)"
-            % [_mesh_vertex_count(node), before])
-        ok = false
-    elif city.network_graph.fingerprint() != before_graph:
-        push_error("undoing the save-tile bulldoze restored the mesh but not the graph")
         ok = false
     return ok
 
@@ -710,8 +861,6 @@ func _check_rail_purity(model, graph) -> bool:
 # which folds in every arc's endpoints.
 func _check_incremental(city, model, graph) -> bool:
     var before : int = graph.fingerprint()
-    var before_arcs : int = graph.arc_count()
-    var before_nodes : int = graph.node_count()
 
     # Pick a real road tile with neighbours, so removing it actually disturbs
     # something, and prefer one in the middle of a run.
@@ -719,6 +868,9 @@ func _check_incremental(city, model, graph) -> bool:
     if victim == null:
         print("  note  no suitable tile to test removal against")
         return true
+    # Held across the removal so it can be put back. remove() erases the model's
+    # reference, not the Tile itself.
+    var victim_tile = model.get_tile(victim)
 
     var removed = model.remove([victim])
     var after_remove : int = graph.fingerprint()
@@ -732,24 +884,28 @@ func _check_incremental(city, model, graph) -> bool:
     graph.rebuild()
     if graph.fingerprint() != incremental_after_remove:
         push_error("after removal, incremental graph disagrees with a full rebuild")
-        model.undo()
         return false
     print("  ok    incremental removal matches a full rebuild")
 
-    # Put it back and confirm we land exactly where we started.
-    model.undo()
-    var restored : int = graph.fingerprint()
+    # And the same in the ADDING direction, which is the harder one: an
+    # incremental update tears down the boundaries around the dirty cells and
+    # re-derives them, and a portal still carrying an untouched neighbour's arcs
+    # has to survive that and still be visible to the stitch. When it was not,
+    # the re-emitted tile found nothing to pair with and the boundary quietly
+    # came apart -- with the arc count unchanged, so only comparing against a
+    # full rebuild catches it.
     var ok := true
-    if restored != before:
-        push_error("undo did not restore the graph: fingerprint %d vs %d" % [restored, before])
-        ok = false
-    elif graph.arc_count() != before_arcs or graph.node_count() != before_nodes:
-        push_error("undo restored the fingerprint but not the counts: %d/%d vs %d/%d"
-            % [graph.arc_count(), graph.node_count(), before_arcs, before_nodes])
-        ok = false
+    model.place([victim_tile])
+    var incremental_after_place : int = graph.fingerprint()
+    graph.rebuild()
+    if graph.fingerprint() == incremental_after_place:
+        print("  ok    incremental placement matches a full rebuild")
     else:
-        print("  ok    undo restored the graph exactly (%d arcs, %d nodes)"
-            % [before_arcs, before_nodes])
+        push_error("after placement, incremental graph disagrees with a full rebuild")
+        ok = false
+    # The city keeps the edit: remove() relaxed the victim's neighbours' edge
+    # codes in place and nothing restores those, so this is not a round trip.
+    # Later checks capture their own before-state, so that is theirs to handle.
     return ok
 
 # A tile with two opposite neighbours, i.e. one in the middle of a run, so

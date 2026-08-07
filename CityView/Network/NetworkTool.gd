@@ -11,6 +11,10 @@ extends Node3D
 #
 # Keys: R draw, B bulldoze, Escape none, Ctrl toggles drag-vs-existing priority
 # at intersections, and the mode is shown in the corner.
+#
+# Edits are PERMANENT. There is no undo in the editing stack -- neither here nor
+# in NetworkModel or LotModel -- so a committed drag or bulldoze is the end of
+# it.
 class_name NetworkTool
 
 enum Mode { NONE, DRAW, BULLDOZE }
@@ -33,6 +37,7 @@ var network : String = "Road"
 var model : NetworkModel = null
 var renderer : Node = null              # NetworkRenderer
 var piece_db : NetworkPieceDB = null
+var lots : LotModel = null
 
 # Drag state. `drag_from` is NO_TILE when no drag is in progress.
 var drag_from : Vector2i = NO_TILE
@@ -45,12 +50,14 @@ var _map_w : int = 0
 var _map_h : int = 0
 
 func setup(network_model : NetworkModel, network_renderer : Node,
-        db : NetworkPieceDB, map_w : int, map_h : int) -> void:
+        db : NetworkPieceDB, map_w : int, map_h : int,
+        lot_model : LotModel = null) -> void:
     model = network_model
     renderer = network_renderer
     piece_db = db
     _map_w = map_w
     _map_h = map_h
+    lots = lot_model
 
 # --- input -------------------------------------------------------------------
 #
@@ -105,14 +112,11 @@ func _handle_key(keycode : int) -> bool:
         KEY_BRACKETRIGHT when mode != Mode.NONE:
             cycle_network(1)
             return true
-        # Only while a drag is live, so Ctrl+Z does not flip it as a side effect.
+        # Only while a drag is live, so it cannot be flipped by accident between
+        # drags.
         KEY_CTRL when drag_from != NO_TILE:
             drag_first = not drag_first
             _preview()
-            return true
-        KEY_Z when Input.is_key_pressed(KEY_CTRL):
-            var changed := undo()
-            Log.info("Undo: %d cells restored" % changed.size())
             return true
     return false
 
@@ -180,34 +184,75 @@ func _preview() -> void:
     if mode == Mode.DRAW:
         renderer.preview_draw(drag_from, drag_to, network, drag_first)
     else:
-        renderer.preview_bulldoze(bulldoze_cells())
+        renderer.preview_bulldoze(bulldoze_preview_cells())
 
-# Bulldoze selects an axis-aligned box in tile space, the way SC4's bulldozer
-# does -- deliberately independent of the drawing tool's direction snapping.
-func bulldoze_cells() -> Array:
+# What a bulldoze would actually take, for the highlight. A lot comes out whole
+# even when the box only clips its corner, so the preview covers the whole lot
+# -- highlighting just the part inside the box would understate the damage.
+func bulldoze_preview_cells() -> Array:
+    var box := bulldoze_box_cells()
+    var seen := {}
+    for cell in box:
+        if model != null and model.has_tile(cell):
+            seen[cell] = true
+    if lots != null:
+        for lot in lots.lots_over(box, true):
+            for cell in LotModel.cells_of(lot):
+                seen[cell] = true
+    return seen.keys()
+
+# Every cell inside the bulldoze box, whether or not anything stands there.
+# Filtering to occupied cells is left to the two things that consume this,
+# because they do not agree on what "occupied" means: the network cares about
+# its tiles, the bulldozer also has to take a lot sitting on bare ground.
+func bulldoze_box_cells() -> Array:
     if drag_from == NO_TILE or drag_to == NO_TILE:
         return []
     var cells : Array = []
     for x in range(mini(drag_from.x, drag_to.x), maxi(drag_from.x, drag_to.x) + 1):
         for z in range(mini(drag_from.y, drag_to.y), maxi(drag_from.y, drag_to.y) + 1):
-            var cell := Vector2i(x, z)
-            if model != null and model.has_tile(cell):
-                cells.append(cell)
+            cells.append(Vector2i(x, z))
     return cells
 
-# Applies the pending drag. Everything reaches the model through here, so the
+# The subset of the box that holds a network tile.
+func bulldoze_cells() -> Array:
+    var cells : Array = []
+    for cell in bulldoze_box_cells():
+        if model != null and model.has_tile(cell):
+            cells.append(cell)
+    return cells
+
+# Applies the pending drag. Everything reaches the models through here, so the
 # graph cannot end up describing something other than what was drawn.
 func commit() -> Array:
     var changed : Array = []
     if mode == Mode.DRAW and renderer != null:
+        # Lots first. A road laid over a zoned building flattens it -- SC4 lets
+        # a road eat a growable lot that is in the way, and only refuses over a
+        # plopped one. Clearing before the tiles are placed keeps the order the
+        # same as a bulldoze followed by a draw.
+        _raze_lots(renderer.pending_cells())
         changed = renderer.commit_draw()
-    elif mode == Mode.BULLDOZE and model != null:
+    elif mode == Mode.BULLDOZE:
+        _raze_lots(bulldoze_box_cells())
         var cells := bulldoze_cells()
-        if not cells.is_empty():
+        if not cells.is_empty() and model != null:
             changed = model.remove(cells)
             renderer.forget_cells(cells)
     _cancel_drag()
     return changed
+
+# Bulldozes the growable lots covering `cells`. Plopped lots are left alone:
+# a stadium does not give way to a road.
+func _raze_lots(cells : Array) -> Array:
+    if lots == null or cells.is_empty():
+        return []
+    var doomed := lots.lots_over(cells, true)
+    if doomed.is_empty():
+        return []
+    var freed := lots.remove(doomed)
+    Log.info("Razed %d growable lot(s) over %d tiles" % [doomed.size(), freed.size()])
+    return freed
 
 # --- scripted entry points, for harnesses ------------------------------------
 #
@@ -226,12 +271,14 @@ func draw_line(from : Vector2i, to : Vector2i, network_name : String = "") -> Ar
     mode = previous
     return changed
 
+# Bulldozes whatever stands on `cells`: network tiles and growable lots both.
 func bulldoze(cells : Array) -> Array:
-    if model == null or cells.is_empty():
+    if cells.is_empty():
         return []
+    _raze_lots(cells)
     var present : Array = []
     for cell in cells:
-        if model.has_tile(cell):
+        if model != null and model.has_tile(cell):
             present.append(cell)
     if present.is_empty():
         return []
@@ -243,14 +290,6 @@ func bulldoze(cells : Array) -> Array:
 func bulldoze_box(from : Vector2i, to : Vector2i) -> Array:
     drag_from = from
     drag_to = to
-    var cells := bulldoze_cells()
+    var cells := bulldoze_box_cells()
     _cancel_drag()
     return bulldoze(cells)
-
-func undo() -> Array:
-    if model == null or not model.can_undo():
-        return []
-    var changed := model.undo()
-    if renderer != null:
-        renderer.resync(changed)
-    return changed
