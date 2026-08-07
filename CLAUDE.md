@@ -153,8 +153,19 @@ Everything flows through this singleton.
   `dev_notes/save_file_analysis` §10. `NetworkDebugDraw.gd` draws the graph over the city
   (**G** to toggle, **H** to add pedestrian lanes) — build it before trusting any change to
   the conventions, since a wrong rotation still renders a plausible road network.
+  `NetworkPieceDB.gd` loads the 24 RUL files into a piece catalogue keyed by network and
+  WNES signature, `NetworkRenderer.gd` (was `TransitTiles.gd`) solves a drag into tiles and
+  meshes, and `NetworkTool.gd` owns input and modes. **Keys: R draw, B bulldoze, Esc off,
+  `[`/`]` change network, Ctrl+Z undo, G graph overlay.** The tool starts in NONE — before
+  the split, a left-click anywhere in the city unconditionally paved a road. Everything it
+  places or removes goes through `NetworkModel`, so the graph follows without the tool
+  knowing the graph exists. Each drag operation also has a plain method behind it
+  (`draw_line`, `bulldoze`, `bulldoze_box`, `undo`) so harnesses can drive it without a mouse.
+  **Known defect:** drawn roads render solid black — the transit shader gets UV2 as (0,0), so
+  the texture-array layer never reaches it. Geometry, model and graph are all correct; see
+  the header of `NetworkRenderer.gd`.
   `CityView/ClassDefinitions/` still holds the older, unwired sketches (`NetGraphNode`,
-  `NetGraphEdge`, `NetTile`), kept only because `TransitTiles.gd` still references them.
+  `NetGraphEdge`, `NetTile`), kept only because `NetworkRenderer.gd` still references them.
 - **DAT Explorer** (`DATExplorer/`): a `Tree` browser over loaded DBPF archives with TGI
   filters and subfile previews. Dev tool.
 

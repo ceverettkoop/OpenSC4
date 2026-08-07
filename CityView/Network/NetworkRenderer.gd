@@ -1,12 +1,45 @@
 extends MeshInstance3D
 
+# Draws the roads the build tool lays down, and solves their shape.
+#
+# Was TransitTiles.gd, which also loaded the RUL files and handled mouse input.
+# Those are now NetworkPieceDB and NetworkTool; what stays here is everything
+# that turns a drag into geometry: snapping it to one of 24 directions, working
+# out each tile's edge codes, reconciling them with the tiles already there,
+# picking the piece that best fits its neighbours, and emitting the vertices.
+#
+# Coordinates. The solver below works in float Vector2 throughout, because it
+# does arithmetic against corner offsets and direction vectors that are
+# genuinely fractional. NetworkModel keys on Vector2i, where Vector2(1,2) and
+# Vector2i(1,2) are different dictionary keys entirely. The conversion happens
+# at this class's public methods and nowhere else -- inside, everything is
+# Vector2; outside, everything is Vector2i.
+#
+# KNOWN DEFECT, pre-dating the split: drawn roads render solid black. The tile
+# solving, the model and the graph are all correct -- only the texturing is
+# wrong. The transit shader (City.tscn SubResource 18) reads the texture-array
+# layer out of UV2, packed as (layer & 255, layer >> 8) with 128 added to the
+# green channel once a tile is committed. Instrumenting the shader to output
+# UV2 directly shows it arriving as (0, 0), so the layer never reaches it and
+# every fragment samples layer 0 -- which is why the geometry is right and the
+# colour is not. The vertex emission below is unchanged from the pre-split
+# code and get_uvs()/get_mesh_arrays() are byte-identical, so this is a Godot
+# 3 to 4 port artefact in how UV2 survives add_surface_from_arrays, not
+# something the split introduced. The save's own roads are unaffected: City.gd
+# draws those with a plain StandardMaterial3D and a real texture.
+class_name NetworkRenderer
 
 var mat = self.get_material_override()
 var textarr = false
 var layer_arr : Array
 var transit_tiles : Dictionary = {}
+# The tiles this renderer has drawn, keyed by float Vector2 -- see the note on
+# coordinates above. The authoritative record is NetworkModel; this is the
+# solver's own working set, which also holds the RUL edge codes it needs and
+# the model does not keep in the same form.
 var network_tiles : Dictionary = {}
-var network_graph : NetworkGraph
+var model : NetworkModel = null
+var piece_db : NetworkPieceDB = null
 var drag_tiles : Dictionary = {}
 var drag_arrays : Array = []
 var built_arrays : Array = []
@@ -45,139 +78,189 @@ var neigh_num_to_vec = [
     Vector2(0, 2),Vector2(-1, 2),Vector2(-2, 2),Vector2(-2, 1)
 ]
 
-# Called when the node enters the scene tree for the first time.
-func _ready():
-    """
-    - Load RUL's - done
-    - Use RUL's to load FSH's into texarr and set layer_arr - done
-    - Generate TransiTile objects - done
-    """
-    var rul_iid_types = {
-    0x0000001 : "Elevated Highway",
-    0x0000002 : "Elevated Highway",
-    0x0000003 : "WaterPipe",
-    0x0000004 : "WaterPipe",
-    0x0000005 : "Rail",
-    0x0000006 : "Rail",
-    0x0000007 : "Road",
-    0x0000008 : "Road",
-    0x0000009 : "Street",
-    0x000000A : "Street",
-    0x000000B : "Subway",
-    0x000000C : "Subway",
-    0x000000D : "Avenue",
-    0x000000E : "Avenue",
-    0x000000F : "Elevated Rail",
-    0x0000010 : "Elevated Rail",
-    0x0000011 : "One-Way Road",
-    0x0000012 : "One-Way Road",
-    0x0000013 : "Dirt Road",
-    0x0000014 : "Dirt Road",
-    0x0000015 : "Monorail",
-    0x0000016 : "Monorail",
-    0x0000017 : "Ground Highway",
-    0x0000018 : "Ground Highway"}
-    # it gets messy here, not sure how to make this not a tonne of loops without sacrificing fast lookups when drawing
-    # iter rul files
-    for RUL_id in rul_iid_types.keys():
-        var t_type = rul_iid_types[RUL_id]
-        if not self.transit_tiles.keys().has(t_type):
-            self.transit_tiles[t_type] = {}
-        var rul_dict = Core.subfile(0x0a5bcf4b, 0xaa5bcf57, RUL_id, RULSubfile).RUL_wnes
-        # iter options for west-edge
-        #if t_type == "Road":
-            #print("debug", rul_dict[0][2])
-        for wnes in rul_dict.keys():
-            if not self.transit_tiles[t_type].keys().has(wnes):
-                self.transit_tiles[t_type][wnes] = []
-            for i in range(len(rul_dict[wnes])):
-                var rul_edges = {0: wnes}
-                var rul_ids = {}
-                var layer_inds = {}
-                # iter its 2 and 3 lines
-                for line in rul_dict[wnes][i]:
-                    # if 2-line it gets stored in edges
-                    if line[0] == 2:
-                        rul_edges[line[1]] = line.slice(2, 6)
-                    # else must be 3-line, add to rul_ids and initiate its FSH
-                    else:
-                        rul_ids[line[1]] = line.slice(2, 5)
-                        if not layer_arr.has(line[2]):
-                            # if matching FSH is found
-                            if Core.sub_by_type_and_group[[0x7ab50e44, 0x1abe787d]].keys().has(line[2]):
-                                layer_arr.append(line[2])
-                        if layer_arr.has(line[2]):
-                            layer_inds[line[1]] = layer_arr.find(line[2])
-                self.transit_tiles[t_type][wnes].append(TransitTile.new(rul_edges, rul_ids, layer_inds))
-    # Build the transit texture array (Godot 4 API: create_from_images). FSH
-    # images may be compressed (DXT) and differently sized, so normalise each to
-    # RGBA8 at the first layer's size before packing.
-    var images : Array[Image] = []
-    var ref_w := 0
-    var ref_h := 0
-    for i in range(len(layer_arr)):
-        var iid = layer_arr[i]
-        var t_FSH = Core.subfile(0x7ab50e44, 0x1abe787d, iid+4, FSHSubfile)
-        var im : Image = t_FSH.img.duplicate()
-        if im.is_compressed():
-            im.decompress()
-        im.convert(Image.FORMAT_RGBA8)
-        if ref_w == 0:
-            ref_w = im.get_width()
-            ref_h = im.get_height()
-        elif im.get_width() != ref_w or im.get_height() != ref_h:
-            im.resize(ref_w, ref_h)
-        images.append(im)
-    if not images.is_empty():
-        self.textarr = Texture2DArray.new()
-        self.textarr.create_from_images(images)
-    self.mat = self.get_material_override()
-    if self.textarr:
-        self.mat.set_shader_parameter("textarr", textarr)
-    self.add_child(drag_meshinst)
-    #self.mat.set_shader_parameter("built", false)
+# Set up by City.gd once the piece database and the model exist. Nothing here
+# loads game data any more -- NetworkPieceDB does that once and is shared.
+func setup(db : NetworkPieceDB, network_model : NetworkModel) -> void:
+    piece_db = db
+    model = network_model
+    transit_tiles = db.pieces
+    layer_arr = db.layer_ids
+    textarr = db.texture_array
+    mat = get_material_override()
+    if textarr and mat != null:
+        mat.set_shader_parameter("textarr", textarr)
+    if mat == null or not textarr:
+        Log.warn("NetworkRenderer: material %s, texture array %s -- drawn roads will not texture"
+            % ["ok" if mat != null else "MISSING", "ok" if textarr else "MISSING"])
+    if drag_meshinst.get_parent() == null:
+        add_child(drag_meshinst)
     drag_meshinst.set_material_override(mat)
-    #self.mat.set_shader_parameter("built", true)
-    self.set_material_override(mat)
-    
-func _input(event):
-    if event is InputEventMouseButton:
-        if event.is_pressed():
-            if event.button_index == 1:
-                self.start_l = self.mouse_ray()
-                self.hold_l = self.mouse_ray()
-                self._drag_network(self.start_l, self.hold_l, "Road")
-        if not event.is_pressed():
-            if event.button_index == 1 and self.hold_l:
-                _build_network()
-                self.start_l = false
-                self.hold_l = false
-    elif event is InputEventMouseMotion and start_l:
-        self.hold_l = self.mouse_ray()
-        self._drag_network(self.start_l, self.hold_l, "Road")
-    elif event is InputEventKey:
-        if event.pressed and event.keycode == KEY_CTRL:
-            self.drag_first = not self.drag_first
-            if self.start_l:
-                self._drag_network(self.start_l, self.hold_l, "Road")
-        
+    set_material_override(mat)
 
-func mouse_ray():
-    var ray_length = 2000
-    var space = get_parent().get_world_3d().direct_space_state
-    var mouse_pos = get_viewport().get_mouse_position()
-    var camera = get_tree().root.get_camera_3d()
-    var from = camera.project_ray_origin(mouse_pos)
-    var to = from + camera.project_ray_normal(mouse_pos) * ray_length
-    var query = PhysicsRayQueryParameters3D.create(from, to)
-    var ray_dict = space.intersect_ray(query)
-    var ret_pos = Vector2()
-    if ray_dict.keys().has("position"):
-        var pos = ray_dict["position"]
-        pos = self.get_parent().transform.affine_inverse() * pos
-        ret_pos = Vector2(floor(pos.x), floor(pos.z))
-    return ret_pos
-    
+# --- the tool's interface ----------------------------------------------------
+#
+# Vector2i in, Vector2i out. The solver below is all float Vector2; this is the
+# only place the two meet.
+
+func clear_preview() -> void:
+    drag_arrays = []
+    drag_tiles = {}
+    drag_tracker = []
+    if drag_meshinst.mesh != null and drag_meshinst.mesh.get_surface_count() > 0:
+        drag_meshinst.mesh = null
+
+# Shows what a drag from `from` to `to` would build, without building it.
+func preview_draw(from : Vector2i, to : Vector2i, network : String, first : bool) -> void:
+    if piece_db == null or not piece_db.has_network(network):
+        return
+    drag_first = first
+    drag_network = network
+    drag_meshinst.set_material_override(mat)
+    _drag_network(Vector2(from.x, from.y), Vector2(to.x, to.y), network)
+
+# Highlights the tiles a bulldoze would remove. Flat quads rather than the
+# drag solver's machinery, so bulldoze does not depend on any of it.
+func preview_bulldoze(cells : Array) -> void:
+    clear_preview()
+    if cells.is_empty():
+        return
+    var verts := PackedVector3Array()
+    var colours := PackedColorArray()
+    var red := Color(1.0, 0.2, 0.2, 0.5)
+    for cell in cells:
+        var h : float = _tile_height(cell) + BULLDOZE_LIFT
+        var corners = [Vector3(cell.x, h, cell.y), Vector3(cell.x, h, cell.y + 1),
+            Vector3(cell.x + 1, h, cell.y + 1), Vector3(cell.x + 1, h, cell.y)]
+        for i in [0, 1, 2, 0, 2, 3]:
+            verts.append(corners[i])
+            colours.append(red)
+    var arrays := []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = verts
+    arrays[ArrayMesh.ARRAY_COLOR] = colours
+    var mesh_out := ArrayMesh.new()
+    mesh_out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    var flat := StandardMaterial3D.new()
+    flat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    flat.vertex_color_use_as_albedo = true
+    flat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    flat.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mesh_out.surface_set_material(0, flat)
+    drag_meshinst.set_material_override(null)
+    drag_meshinst.mesh = mesh_out
+
+# Commits the pending drag: bakes the geometry and registers the tiles with the
+# model, which is what makes the graph follow. Returns the dirty cells.
+func commit_draw() -> Array:
+    if drag_tiles.is_empty():
+        return []
+    var records : Array = []
+    for loc in drag_tiles.keys():
+        var record = _to_model_tile(loc, drag_tiles[loc])
+        if record != null:
+            records.append(record)
+    _build_network()
+    drag_meshinst.set_material_override(mat)
+    if model == null or records.is_empty():
+        return []
+    return model.place(records)
+
+# Turns one solved tile into the record NetworkModel keeps. The RUL 3-line
+# gives the texture and a rotation/flip pair, which is exactly the piece id and
+# orientation byte the model and SC4Path want -- the flip goes in bit 7, the
+# same place NetworkTile.orientation carries it.
+func _to_model_tile(loc : Vector2, tile) -> Variant:
+    if not tile.tile.ids.has(0):
+        return null
+    var spec = tile.tile.ids[0]        # [texture iid, rotation, flip]
+    var record = NetworkModel.Tile.new()
+    record.cell = Vector2i(int(loc.x), int(loc.y))
+    record.piece_id = spec[0]
+    record.orientation = (int(spec[1]) & 3) | (0x80 if int(spec[2]) == 1 else 0)
+    record.wnes = PackedInt32Array(tile.edges)
+    record.network_types = [_network_type_index(drag_network)]
+    record.crossings = [{
+        "type": record.network_types[0],
+        "west": tile.edges[0], "north": tile.edges[1],
+        "east": tile.edges[2], "south": tile.edges[3],
+    }]
+    record.base_height = _tile_height(record.cell)
+    record.source = NetworkModel.SOURCE_USER
+    return record
+
+static func _network_type_index(network : String) -> int:
+    var idx = NetworkSubfile.NETWORK_TYPE_NAMES.find(network)
+    return idx if idx >= 0 else 0
+
+# Drops tiles this renderer drew. Save tiles are not ours to erase -- City.gd
+# rebuilds their batched mesh instead.
+func forget_cells(cells : Array) -> void:
+    var touched := false
+    for cell in cells:
+        var loc := Vector2(cell.x, cell.y)
+        if network_tiles.erase(loc):
+            touched = true
+    if touched:
+        _rebuild_built_mesh(cells)
+
+# Brings the drawn mesh back in line with the model, after an undo.
+func resync(cells : Array) -> void:
+    _rebuild_built_mesh(cells)
+
+# Rebuilds the committed mesh, dropping any quad whose cell no longer holds a
+# tile. built_tracker records the cell each vertex belongs to, so this is a
+# filter rather than a re-solve.
+func _rebuild_built_mesh(_cells : Array) -> void:
+    if built_arrays.is_empty() or built_tracker.is_empty():
+        return
+    var keep : Array = []
+    for i in range(0, built_tracker.size(), 6):
+        var loc = built_tracker[i]
+        if network_tiles.has(loc) or (model != null and model.has_tile(Vector2i(int(loc.x), int(loc.y)))):
+            keep.append(i)
+    var filtered : Array = []
+    filtered.resize(ArrayMesh.ARRAY_MAX)
+    var tracker : Array = []
+    for channel in range(built_arrays.size()):
+        if built_arrays[channel] == null:
+            continue
+        filtered[channel] = []
+        for start in keep:
+            for k in range(6):
+                filtered[channel].append(built_arrays[channel][start + k])
+    for start in keep:
+        for k in range(6):
+            tracker.append(built_tracker[start + k])
+    built_arrays = filtered
+    built_tracker = tracker
+    if mesh != null and mesh.get_surface_count() > 0:
+        mesh.surface_remove(0)
+    if not built_tracker.is_empty():
+        if mesh == null:
+            mesh = ArrayMesh.new()
+        mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, get_mesh_arrays(built_arrays))
+
+# Terrain height at a tile centre, in world units.
+func _tile_height(cell : Vector2i) -> float:
+    var terrain = get_parent().get_node_or_null("Terrain")
+    if terrain == null or terrain.heightmap == null:
+        return 0.0
+    var hm = terrain.heightmap
+    var z : int = clampi(cell.y, 0, hm.size() - 1)
+    var x : int = clampi(cell.x, 0, hm[z].size() - 1)
+    return hm[z][x] / 16.0
+
+# Drawn roads sit at the terrain height the solver computed, which is exactly
+# coplanar with the ground and z-fights with it. Lift them the same way City.gd
+# lifts the save's network quads (NETWORK_SURFACE_LIFT), which also keeps them
+# above the lot base textures at 0.015 + 0.004 * 7 = 0.043.
+const SURFACE_LIFT : float = 0.075
+# Height a bulldoze highlight sits above the terrain, clear of the road quads.
+const BULLDOZE_LIFT : float = 0.09
+
+# The network the current drag is laying, for _to_model_tile.
+var drag_network : String = "Road"
+
 func _drag_network(start, end, type):
     self.drag_arrays.resize(ArrayMesh.ARRAY_MAX)
     self.drag_arrays[ArrayMesh.ARRAY_VERTEX] = []
@@ -299,8 +382,13 @@ func _drag_network(start, end, type):
                 if loc_fix in edges[1]:
                     var ind = edges[1].find(loc_fix)
                     edge_fix = edges[0][ind].duplicate()
-                else:
+                elif network_tiles.has(loc_fix):
                     edge_fix = network_tiles[loc_fix].edges.duplicate()
+                else:
+                    # The recursion reached a cell with nothing on it. That was
+                    # impossible while the tile set only ever grew, but a
+                    # bulldoze can now take a tile out from under it.
+                    continue
                 # edge_ind_affected starts with length 0
                 if not len(edge_ind_affected) == 0:
                     # get the first in list and remove it from list
@@ -316,10 +404,12 @@ func _drag_network(start, end, type):
                         if edges[1].has(affected_loc):
                             var n_ind = edges[1].find(affected_loc)
                             n_edge = edges[0][n_ind]
-                        else:
+                        elif network_tiles.has(affected_loc):
                             n_edge = network_tiles[affected_loc].edges
+                        else:
+                            n_edge = null
                         # only add the neighbor if the affected edge wasn't fixed yet
-                        if n_edge[n_i] == 1 or n_edge[n_i] == 3:
+                        if n_edge != null and (n_edge[n_i] == 1 or n_edge[n_i] == 3):
                             loc_to_fix.append(affected_loc)
                             edge_ind_affected.append(n_i)
                 # only do the below if the above did not produce a valid edge-set
@@ -358,10 +448,12 @@ func _drag_network(start, end, type):
                                 if edges[1].has(affected_loc):
                                     var n_ind = edges[1].find(affected_loc)
                                     n_edge = edges[0][n_ind]
-                                else:
+                                elif network_tiles.has(affected_loc):
                                     n_edge = network_tiles[affected_loc].edges
+                                else:
+                                    n_edge = null
                                 # only add the neighbor if the affected edge wasn't fixed yet
-                                if n_edge[n_i] == 1 or n_edge[n_i] == 3:
+                                if n_edge != null and (n_edge[n_i] == 1 or n_edge[n_i] == 3):
                                     loc_to_fix.append(affected_loc)
                                     edge_ind_affected.append(n_i)
                             # check if the fixed tile is in edges(could be a built tile)
@@ -590,12 +682,12 @@ func _drag_network(start, end, type):
                     for vec_i in range(6):
                         var vec = sub_vec + corners[vecadd[vec_i]]
                         var vec_ht = strip_heights[h_i + step_seq[vecadd[vec_i]]]
-                        self.drag_arrays[ArrayMesh.ARRAY_VERTEX].append(Vector3(vec.x, vec_ht/16.0, vec.y))
+                        self.drag_arrays[ArrayMesh.ARRAY_VERTEX].append(Vector3(vec.x, vec_ht/16.0 + SURFACE_LIFT, vec.y))
                         self.drag_arrays[ArrayMesh.ARRAY_TEX_UV].append(flip_uvs[vecadd[vec_i]])
                         self.drag_arrays[ArrayMesh.ARRAY_COLOR].append(col)
                         self.drag_arrays[ArrayMesh.ARRAY_TEX_UV2].append(layer_vec)
                         self.drag_tracker.append(sub_vec)
-                        normal_verts.append(Vector3(vec.x, vec_ht/16.0, vec.y))
+                        normal_verts.append(Vector3(vec.x, vec_ht/16.0 + SURFACE_LIFT, vec.y))
                     # vecadd = [0,3,1,1,3,2] or [1,0,2,2,0,3]
                     # indices   0 1 2 3 4 5		 0 1 2 3 4 5
                     # ind 1 == 4 is used as the anchors
@@ -613,7 +705,7 @@ func _drag_network(start, end, type):
     if len(self.drag_arrays[ArrayMesh.ARRAY_VERTEX]) > 0:
         var drag_array_mesh = ArrayMesh.new()
         drag_array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, get_mesh_arrays(self.drag_arrays))
-        self.get_child(0).mesh = drag_array_mesh
+        drag_meshinst.mesh = drag_array_mesh
     """
     TODO 
     x diagonal intersections are bugged - done
@@ -645,7 +737,16 @@ func _build_network():#start, end, type):
         var built = Vector2(0, 128) # used to swap from yellow color to basic with tile colors
         var verts_to_terrain = PackedVector3Array(self.drag_arrays[ArrayMesh.ARRAY_VERTEX])
         var UVs_to_terrain = PackedVector2Array(self.drag_arrays[ArrayMesh.ARRAY_TEX_UV])
-        self.get_parent().get_node("Terrain").update_terrain(verts_to_terrain, UVs_to_terrain)
+        # Terrain deformation is off. Terrain.update_terrain() pulls the ground
+        # up to the road and, in doing so, hands the terrain shader the ROAD's
+        # UV2 layer indices -- which are indices into the transit texture array,
+        # not the terrain one -- so the strip under every drawn road rendered
+        # solid black. Roads are lifted clear of the ground instead (see
+        # SURFACE_LIFT), which is what City.gd already does for the save's own
+        # network quads. Re-enabling this needs update_terrain to keep the
+        # terrain's own UVs; the vertices are still computed above so the call
+        # can come back unchanged.
+        #self.get_parent().get_node("Terrain").update_terrain(verts_to_terrain, UVs_to_terrain)
         for i in len(self.drag_arrays):
             if self.built_arrays[i] == null and not self.drag_arrays[i] == null:
                 self.built_arrays[i] = []
@@ -669,7 +770,8 @@ func _build_network():#start, end, type):
             self.mesh.surface_remove(0)
         self.mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, get_mesh_arrays(self.built_arrays))
     self.drag_arrays = []
-    self.get_child(0).mesh.surface_remove(0)
+    if drag_meshinst.mesh != null and drag_meshinst.mesh.get_surface_count() > 0:
+        drag_meshinst.mesh.surface_remove(0)
     for key in self.drag_tiles.keys():
         self.network_tiles[key] = self.drag_tiles[key]
     self.drag_tiles = {}

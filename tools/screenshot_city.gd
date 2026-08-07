@@ -27,6 +27,8 @@ extends Node
 #   pipes     reveal the underground water pipes
 #   graph     draw the transport graph over the city (vehicle lanes)
 #   walking   as graph, plus the pedestrian lanes
+#   draw:x1,z1,x2,z2   lay a road through the build tool before shooting
+#   del:x1,z1,x2,z2    bulldoze that box before shooting
 
 const DEFAULT_REGION = "Timbuktu"
 const DEFAULT_CITY = "Big City Tutorial"
@@ -53,6 +55,7 @@ func _ready():
     var show_pipes = false
     var show_graph = false
     var show_walking = false
+    var edits : Array = []
     if user_args.size() >= 3:
         region = user_args[1]
         city_name = user_args[2]
@@ -68,6 +71,12 @@ func _ready():
             if user_args[i] == "walking":
                 show_graph = true
                 show_walking = true
+                continue
+            # "draw:x1,z1,x2,z2" lays a road before the shot; "del:x1,z1,x2,z2"
+            # bulldozes a box. Lets the visual harness exercise the build tool,
+            # which otherwise needs a mouse.
+            if user_args[i].begins_with("draw:") or user_args[i].begins_with("del:"):
+                edits.append(user_args[i])
                 continue
             var shot = _parse_shot(user_args[i])
             if shot == null:
@@ -106,6 +115,8 @@ func _ready():
     print("City ready, capturing")
     if show_pipes:
         city.set_pipes_visible(true)
+    for edit in edits:
+        _apply_edit(city, edit)
     if show_graph:
         if show_walking:
             city.toggle_graph_debug_pedestrians()
@@ -128,6 +139,26 @@ func _ready():
 
     print("SCREENSHOTS DONE")
     get_tree().quit()
+
+# Applies one "draw:x1,z1,x2,z2" or "del:x1,z1,x2,z2" through the build tool.
+func _apply_edit(city, spec : String) -> void:
+    var tool = city.network_tool
+    if tool == null:
+        push_error("no build tool to apply %s" % spec)
+        return
+    var parts = spec.split(":")
+    var nums = parts[1].split(",")
+    if nums.size() != 4:
+        push_error("Bad edit %s -- want draw:x1,z1,x2,z2" % spec)
+        return
+    var from := Vector2i(int(nums[0]), int(nums[1]))
+    var to := Vector2i(int(nums[2]), int(nums[3]))
+    var changed : Array
+    if parts[0] == "draw":
+        changed = tool.draw_line(from, to, "Road")
+    else:
+        changed = tool.bulldoze_box(from, to)
+    print("%s -> %d cells changed" % [spec, changed.size()])
 
 # "tx,tz,zoom[,rot][,name]" -> {tx, tz, zoom, rot, name}, or null if malformed.
 func _parse_shot(spec : String):

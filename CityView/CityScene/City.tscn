@@ -5,7 +5,8 @@
 [ext_resource type="Script" uid="uid://bmiwgerd5hopx" path="res://CityView/Meshes/Terrain.gd" id="3"]
 [ext_resource type="Script" uid="uid://c4m24u66antpo" path="res://CityView/Meshes/WaterPlane.gd" id="4"]
 [ext_resource type="Script" uid="uid://bqiei4p18rtan" path="res://CityView/Meshes/TestS3D.gd" id="5"]
-[ext_resource type="Script" uid="uid://dpn38fqa022w6" path="res://CityView/Meshes/TransitTiles.gd" id="6"]
+[ext_resource type="Script" uid="uid://dpn38fqa022w6" path="res://CityView/Network/NetworkRenderer.gd" id="6"]
+[ext_resource type="Script" path="res://CityView/Network/NetworkTool.gd" id="40"]
 
 [sub_resource type="ProceduralSkyMaterial" id="20"]
 sky_top_color = Color(0.909804, 0.92549, 0.933333, 1)
@@ -485,9 +486,12 @@ material_override = SubResource("31")
 material_override = SubResource("8")
 cast_shadow = 2
 
-[node name="TransitTiles" type="MeshInstance3D" parent="Node3D"]
+[node name="NetworkRenderer" type="MeshInstance3D" parent="Node3D"]
 material_override = SubResource("19")
 script = ExtResource("6")
+
+[node name="NetworkTool" type="Node3D" parent="."]
+script = ExtResource("40")
 
 [node name="CameraHandler" type="CharacterBody3D" parent="."]
 transform = Transform3D(-0.924, 0, 0.191, 0, -1, 0.866, 0.383, 1, 0.462, 0, 15.625, 0)

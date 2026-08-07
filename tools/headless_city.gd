@@ -264,7 +264,148 @@ func _check_graph(city, model) -> bool:
     ok = _check_rail_purity(model, graph) and ok
     ok = _check_against_simulation(city, model, graph) and ok
     ok = _check_incremental(city, model, graph) and ok
+    ok = _check_tool(city, model, graph) and ok
     return ok
+
+# Drives the build tool the way a user would, without a mouse, and checks the
+# graph follows. This is the end-to-end assertion for the whole feature: a road
+# drawn on empty ground has to become connected arcs, bulldozing its middle has
+# to split it, and undo has to put it back.
+const DRAWN_RUN : int = 8
+
+func _check_tool(city, model, graph) -> bool:
+    var tool = city.network_tool
+    if tool == null:
+        print("  note  no build tool in this scene")
+        return true
+
+    print("\n--- build tool checks ---")
+    var start = _find_clear_run(model, city.size_w * 64, city.size_h * 64)
+    if start == null:
+        print("  note  no clear ground to draw on")
+        return true
+
+    var before_tiles : int = model.size()
+    var before_arcs : int = graph.arc_count()
+    var before_fingerprint : int = graph.fingerprint()
+
+    var finish := Vector2i(start.x + DRAWN_RUN - 1, start.y)
+    tool.draw_line(start, finish, "Road")
+
+    var drawn : Array = []
+    for x in range(start.x, finish.x + 1):
+        var cell := Vector2i(x, start.y)
+        if model.has_tile(cell):
+            drawn.append(cell)
+    var ok := true
+    if drawn.size() == DRAWN_RUN:
+        print("  ok    drew %d road tiles from %s to %s" % [drawn.size(), start, finish])
+    else:
+        push_error("drew %d of %d tiles from %s" % [drawn.size(), DRAWN_RUN, start])
+        ok = false
+    if model.size() != before_tiles + drawn.size():
+        push_error("model went from %d to %d tiles after drawing %d"
+            % [before_tiles, model.size(), drawn.size()])
+        ok = false
+
+    # The drawn tiles must actually carry arcs, or the road exists visually and
+    # not in the graph -- exactly the split this whole change removes.
+    var arcs_on_drawn := 0
+    for cell in drawn:
+        if not graph.arcs_by_cell.get(cell, []).is_empty():
+            arcs_on_drawn += 1
+    if arcs_on_drawn == drawn.size():
+        print("  ok    every drawn tile carries arcs (%d new arcs in total)"
+            % [graph.arc_count() - before_arcs])
+    else:
+        push_error("only %d of %d drawn tiles carry arcs" % [arcs_on_drawn, drawn.size()])
+        ok = false
+
+    var problems = graph.validate()
+    if not problems.is_empty():
+        push_error("graph unsound after drawing: %s" % problems.slice(0, 3))
+        ok = false
+
+    # Bulldozing the middle of the run must break it in two.
+    if drawn.size() >= 3:
+        var middle : Vector2i = drawn[drawn.size() / 2]
+        var before_components : int = _components_over(graph, drawn)
+        tool.bulldoze([middle])
+        var after_components : int = _components_over(graph, drawn)
+        if model.has_tile(middle):
+            push_error("bulldozing %s left the tile in the model" % middle)
+            ok = false
+        elif not graph.arcs_by_cell.get(middle, []).is_empty():
+            push_error("bulldozing %s left its arcs in the graph" % middle)
+            ok = false
+        elif after_components > before_components:
+            print("  ok    bulldozing %s split the run (%d -> %d components)"
+                % [middle, before_components, after_components])
+        else:
+            push_error("bulldozing %s did not split the run (%d -> %d components)"
+                % [middle, before_components, after_components])
+            ok = false
+        tool.undo()
+        if not model.has_tile(middle):
+            push_error("undo did not restore the bulldozed tile")
+            ok = false
+
+    # Undo the draw itself and confirm we are exactly back where we started.
+    model.undo()
+    if model.size() == before_tiles and graph.fingerprint() == before_fingerprint:
+        print("  ok    undo restored the city to %d tiles and the original graph" % before_tiles)
+    else:
+        push_error("after undo: %d tiles (want %d), fingerprint %d (want %d)"
+            % [model.size(), before_tiles, graph.fingerprint(), before_fingerprint])
+        ok = false
+    return ok
+
+# Connected components counted over just these cells, so a local split shows up
+# without being drowned out by the rest of the city.
+func _components_over(graph, cells : Array) -> int:
+    var wanted := {}
+    for cell in cells:
+        wanted[cell] = true
+    var adjacent := {}
+    for arc in graph.arcs:
+        if arc == null or not wanted.has(arc.cell):
+            continue
+        for pair in [[arc.from_node, arc.to_node], [arc.to_node, arc.from_node]]:
+            if not adjacent.has(pair[0]):
+                adjacent[pair[0]] = []
+            adjacent[pair[0]].append(pair[1])
+    var seen := {}
+    var count := 0
+    for start in adjacent.keys():
+        if seen.has(start):
+            continue
+        count += 1
+        var stack : Array = [start]
+        seen[start] = true
+        while not stack.is_empty():
+            var current = stack.pop_back()
+            for next in adjacent.get(current, []):
+                if not seen.has(next):
+                    seen[next] = true
+                    stack.append(next)
+    return count
+
+# A horizontal run of empty cells with empty ground either side, so the drawn
+# road cannot merge into an existing one and confuse the counts.
+func _find_clear_run(model, map_w : int, map_h : int):
+    for z in range(4, map_h - 4):
+        for x in range(4, map_w - DRAWN_RUN - 4):
+            var clear := true
+            for dx in range(-1, DRAWN_RUN + 1):
+                for dz in range(-1, 2):
+                    if model.has_tile(Vector2i(x + dx, z + dz)):
+                        clear = false
+                        break
+                if not clear:
+                    break
+            if clear:
+                return Vector2i(x, z)
+    return null
 
 # Checks the model against SC4's own traffic simulation output, which the game
 # saved per tile. This is the strongest check available: it compares our

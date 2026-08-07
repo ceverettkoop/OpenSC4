@@ -609,6 +609,8 @@ func load_networks():
     network_debug.attach(network_graph)
     network_model.tiles_changed.connect(func(_dirty): network_debug.queue_rebuild())
 
+    _setup_network_tool()
+
     if not orient["mismatches"].is_empty():
         # Grouped so the residual stays diagnosable rather than just being a
         # number that drifts. Expect these to be avenue medians (edge code 4,
@@ -676,6 +678,51 @@ func load_networks():
         % [drawn, by_family.size(), missing.size()])
     if not missing.is_empty():
         Log.warn("load_networks: texture families missing from the DATs: %s" % missing)
+
+# Builds the RUL piece catalogue and hands it, the model and the renderer to
+# the build tool. Everything the tool places goes back through NetworkModel, so
+# the graph follows an edit without the tool knowing the graph exists.
+var network_tool : NetworkTool = null
+var network_pieces : NetworkPieceDB = null
+
+func _setup_network_tool():
+    network_pieces = NetworkPieceDB.new()
+    Log.info("Network pieces: %s" % network_pieces.stats())
+    var renderer = $Node3D.get_node_or_null("NetworkRenderer")
+    if renderer != null:
+        renderer.setup(network_pieces, network_model)
+    network_tool = get_node_or_null("NetworkTool")
+    if network_tool != null:
+        network_tool.setup(network_model, renderer, network_pieces, size_w * 64, size_h * 64)
+        _setup_tool_hud()
+
+# A one-line readout in the otherwise empty UICanvas. Without it the tool is
+# undiscoverable -- it starts in NONE, so nothing at all happens until a key is
+# pressed, and there would be no way to tell that from it being broken.
+var tool_label : Label = null
+
+func _setup_tool_hud():
+    var canvas = get_node_or_null("UICanvas")
+    if canvas == null:
+        return
+    tool_label = Label.new()
+    tool_label.name = "ToolMode"
+    tool_label.position = Vector2(12, 12)
+    tool_label.add_theme_color_override("font_color", Color(1, 1, 1))
+    tool_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+    tool_label.add_theme_constant_override("outline_size", 4)
+    canvas.add_child(tool_label)
+    network_tool.mode_changed.connect(_on_tool_mode_changed)
+    _on_tool_mode_changed(network_tool.mode)
+
+func _on_tool_mode_changed(_mode : int):
+    if tool_label == null or network_tool == null:
+        return
+    var detail := ""
+    if network_tool.mode == NetworkTool.Mode.DRAW:
+        detail = "  [%s]  [ ] to change" % network_tool.network
+    tool_label.text = "Tool: %s%s      R draw  B bulldoze  Esc off  Ctrl+Z undo  G graph" \
+        % [network_tool.mode_name(), detail]
 
 # One line per disagreeing piece: what the paths claim vs what the save says.
 func _top_mismatches(mismatches : Array, by_piece : Dictionary) -> String:
