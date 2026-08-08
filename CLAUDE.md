@@ -210,7 +210,8 @@ Everything flows through this singleton.
   `NetworkPieceDB.gd` loads the 24 RUL files into a piece catalogue keyed by network and
   WNES signature, `NetworkRenderer.gd` (was `TransitTiles.gd`) solves a drag into tiles and
   meshes, and `NetworkTool.gd` owns input and modes. **Keys: R draw, B bulldoze, Esc off,
-  `[`/`]` change network, G graph overlay.** The tool starts in NONE — before
+  `,`/`.` change network (brackets belong to camera rotation), G graph overlay; the HUD
+  label lists every hotkey.** The tool starts in NONE — before
   the split, a left-click anywhere in the city unconditionally paved a road. Everything it
   places or removes goes through `NetworkModel`, so the graph follows without the tool
   knowing the graph exists. Each drag operation also has a plain method behind it

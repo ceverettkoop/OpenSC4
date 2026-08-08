@@ -854,13 +854,17 @@ func _setup_tool_hud():
     network_tool.mode_changed.connect(_on_tool_mode_changed)
     _on_tool_mode_changed(network_tool.mode)
 
+# The full hotkey reference lives on this label: one line for the build tool
+# (with the current network while drawing), one for the view/camera toggles.
 func _on_tool_mode_changed(_mode : int):
     if tool_label == null or network_tool == null:
         return
     var detail := ""
     if network_tool.mode == NetworkTool.Mode.DRAW:
-        detail = "  [%s]  [ ] to change" % network_tool.network
-    tool_label.text = "Tool: %s%s      R draw  B bulldoze  Esc off  G graph" \
+        detail = "  [%s]" % network_tool.network
+    tool_label.text = ("Tool: %s%s      R draw  B bulldoze  Esc off  , . network\n"
+        + "G graph  H +walking  U underground  V data views  Space sim speed  "
+        + "F free cam  arrows pan  +/- zoom  PgUp/PgDn rotate") \
         % [network_tool.mode_name(), detail]
 
 # One line per disagreeing piece: what the paths claim vs what the save says.
@@ -1138,7 +1142,8 @@ func _update_data_view_hud():
             return
         data_view_label = Label.new()
         data_view_label.name = "DataView"
-        data_view_label.position = Vector2(12, 36)
+        # Below the two-line tool/hotkey label.
+        data_view_label.position = Vector2(12, 64)
         data_view_label.add_theme_color_override("font_color", Color(1, 1, 1))
         data_view_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
         data_view_label.add_theme_constant_override("outline_size", 4)
@@ -1216,7 +1221,7 @@ func _update_sim_hud():
             return
         sim_label = Label.new()
         sim_label.name = "SimClock"
-        sim_label.position = Vector2(12, 60)
+        sim_label.position = Vector2(12, 88)
         sim_label.add_theme_color_override("font_color", Color(1, 1, 1))
         sim_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
         sim_label.add_theme_constant_override("outline_size", 4)

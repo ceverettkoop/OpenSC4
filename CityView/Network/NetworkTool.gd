@@ -106,10 +106,12 @@ func _handle_key(keycode : int) -> bool:
         KEY_ESCAPE:
             set_mode(Mode.NONE)
             return true
-        KEY_BRACKETLEFT when mode != Mode.NONE:
+        # Comma/period rather than the brackets, which the camera already
+        # uses for rotation -- the tool was shadowing it while active.
+        KEY_COMMA when mode != Mode.NONE:
             cycle_network(-1)
             return true
-        KEY_BRACKETRIGHT when mode != Mode.NONE:
+        KEY_PERIOD when mode != Mode.NONE:
             cycle_network(1)
             return true
         # Only while a drag is live, so it cannot be flipped by accident between
