@@ -85,9 +85,10 @@ format and the fix. The 2,339 props still unplaced are a *different* problem: th
 S3D model, but no zoom/rotation variant of it exists in the DATs we load.
 
 **Not implemented (present in this save):** the item index, zone developer/manager, tract
-developer, all 136 SimGrid layers, every simulator/manager state blob, budget (departments, line
+developer, every simulator/manager state blob, budget (departments, line
 items, taxes), the ~20 ordinances, historical graph data, advice state, and the COM-serializer
-registry.
+registry. (The 136 SimGrid layers, previously on this list, are parsed and modeled now — §11,
+§12.)
 
 **Engine scaffolding still unfed:** `CityView/ClassDefinitions/` (NetGraphNode, NetGraphEdge,
 NetTile, TransitTile) models a transit-network *graph*. The §4.4 parsers give it geometry but
@@ -218,12 +219,12 @@ coordinates of the ground-network records).
 
 | Type ID | Bytes | Records | Identification | Confidence | OpenSC4 status |
 |---|---:|---:|---|---|---|
-| `0x49B9E602` | 298,466 | 46 | SimGridUint8 — 46 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Not implemented |
-| `0x49B9E603` | 20,755 | 5 | SimGridSint8 — 5 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Not implemented |
-| `0x49B9E604` | 56,781 | 27 | SimGridUint16 — 27 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Not implemented |
-| `0x49B9E605` | 168,033 | 39 | SimGridSint16 — 39 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Not implemented |
-| `0x49B9E606` | 65,591 | 1 | SimGridUint32 — 1 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Not implemented |
-| `0x49B9E60A` | 624,606 | 18 | SimGridFloat32 — 18 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Not implemented |
+| `0x49B9E602` | 298,466 | 46 | SimGridUint8 — 46 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Implemented (`SimGridSubfile`, `SimGrids` model) |
+| `0x49B9E603` | 20,755 | 5 | SimGridSint8 — 5 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Implemented (`SimGridSubfile`, `SimGrids` model) |
+| `0x49B9E604` | 56,781 | 27 | SimGridUint16 — 27 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Implemented (`SimGridSubfile`, `SimGrids` model) |
+| `0x49B9E605` | 168,033 | 39 | SimGridSint16 — 39 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Implemented (`SimGridSubfile`, `SimGrids` model) |
+| `0x49B9E606` | 65,591 | 1 | SimGridUint32 — 1 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Implemented (`SimGridSubfile`, `SimGrids` model) |
+| `0x49B9E60A` | 624,606 | 18 | SimGridFloat32 — 18 simulation data grids (record header verified: own-type, dataId, dims) | Verified | Implemented (`SimGridSubfile`, `SimGrids` model) |
 
 ### 4.6 Ordinances
 
@@ -386,10 +387,8 @@ consumes them is `CityView/Network/NetworkModel.gd`.
 
 Remaining, ordered by likely value to OpenSC4:
 
-1. **SimGrids (§4.5)** — the record header is fully decoded (this analysis parses all 136
-   layers cleanly: own type id, dataId, resolution, dims at fixed offsets, 55-byte header).
-   They power every data-view overlay (pollution, land value, crime, traffic…). A generic
-   `SimGridSubfile` would be a small, high-leverage parser.
+1. ~~**SimGrids (§4.5)**~~ — done: `SimGridSubfile` parses all six types, `SimGrids` models
+   them, and the first data view (wealth via the occupant-code grid, §12) renders from them.
 3. **Zone developer / item index (§4.8)** — per-tile zoning enables a zoning overlay and is
    needed before any simulation work.
 4. **Region-view completeness** — use the localized LTEXT city name (`G=0x6AAEE931`) instead
@@ -811,16 +810,160 @@ turn-capacity multiplier both reference a capacity that must exist somewhere, mo
 — which is how NAM's traffic-simulator mods work, by overriding this exemplar. That blocks
 congestion modelling, not connectivity or routing.
 
+## 12. Session log — 2026-08-07: DataView exemplars, and the wealth (occupant-code) grid
+
+The first rendered data view. `CityView/SimGrids.gd` models the layers, `CityView/
+DataViewCatalogue.gd` reads SC4's own view definitions off the DATs, and `City.set_data_view`
+paints a view's grid through its colour ramp into a per-tile lookup texture on the terrain shader
+(**V** cycles views; the `landvalue` keyword in the screenshot harness captures it).
+
+### The DataView exemplars (group 0x690F693F)
+
+`SimCity_1.dat` holds ~30 exemplars named `DataView: <name>` under group `0x690F693F`
+("DATA_VIEW_PARENTS" in `Core.gd`), exemplar type `0x6534284A` — one per view in SC4's data-view
+menu (Mayor rating, Land value, Crime, Power, pollution, the per-RCI desirability set, traffic
+volumes…). The group also holds unrelated exemplars (Drive-vehicle panels, trend bars); only
+entries with a colour ramp are views. Properties (names in `exemplar_types.dict`):
+
+| Property | Meaning |
+|---|---|
+| `0x4A0B47E4` | Colour ramp: flat u32 array of `(threshold, 0xAARRGGBB)` pairs, ascending |
+| `0x4A0B47E5` | **Data source — a small enum private to the view system, NOT a SimGrid dataId** |
+| `0x4A0B47E6` | Zone opacity, 0..100 (`0x4A0B47EC` is "Maximum scale", easy to confuse) |
+| `0x4A0B47E7` | Interpolate data (spatial smoothing between cells) |
+| `0x4A0B47F2/F3/F4` | Legend colours / label LTEXT ids / header LTEXT |
+
+The Land value ramp is 12 stops, thresholds `0x00..0xFF` evenly spaced, colours
+`0x99FF0000` (red) → `0x9900FF00` (green), alpha `0x99` throughout. Data source enums seen:
+Land value 2, Crime/Police 4, Fire 6, Power 7, Air pollution 8, Traffic 9, Water 0x0A,
+desirability 0x14-0x17 and 0x40-0x4B, traffic volumes all 0x4C. Nothing on disc links the enum
+to a savegame dataId; the known pairs are hand-curated in `DataViewCatalogue.DATA_SOURCE_TO_GRID`
+with per-entry evidence. The views' shared parent cohort (`0x05342861 0x690F693F 0x4A0B6700`)
+has signature **CQZB**, which `ExemplarSubfile` (asserts EQZB) cannot parse — deliberately not
+requested; the view exemplars carry their own ramps, so cohort inheritance is not needed.
+
+### There is no saved land-value grid; the wealth grid is occupant codes
+
+The obvious first guess — a continuous land-value layer — is **not in the save**. Every common
+grid was screened against per-tile lot `zone_wealth` across four saves (Big City Tutorial, Tegel,
+Kensington, Konradshohe); none has a continuous, positively-correlating, beyond-the-lots profile.
+(`0x49D5B964`/`0x49D5B953`, the smooth twins that spread past the lots, *anti*-correlate with
+residential wealth — a pollution-like signature. **Superseded: §13 identified the pair as
+FLAMMABILITY, not pollution.**) SC4 recomputes land value at load.
+
+What is saved is **`0x49D5B678`** (u8 128×128): a per-tile **occupant code**, family base plus
+wealth. Crosstabbed against lot `zone_wealth` over all 12 populated saves, every nonzero code
+maps to exactly one wealth class with zero exceptions:
+
+| code | occupants | wealth |
+|---|---|---|
+| 0 | vacant / abandoned | none |
+| 1 | plopped civic (zone 15) | none |
+| 6 / 7 / 8 | R$ / R$$ / R$$$ | 1 / 2 / 3 |
+| 10 / 11 / 12 | CS$ / CS$$ / CS$$$ | 1 / 2 / 3 |
+| 15 / 16 | CO$$ / CO$$$ | 2 / 3 |
+| 22 | farms (zone 7) | 1 |
+| 27, 31 | heavier industry (zones 8/9) | 2 |
+
+Decode table: `SimGridSubfile.OCCUPANT_CODE_WEALTH`. The harness gates on this identification
+(`_check_data_views`): decoding the grid must reproduce lot wealth on ≥95% of occupied lot tiles
+— it is 100.0% on every populated save today — plus all-grids-parse and catalogue-sanity checks.
+
+The Land value view renders this grid: code → wealth class → a representative land value fed to
+the authentic ramp. The representatives (0 / 35 / 95 / 180) sit mid-band between the **wealth
+boundaries [70, 120]** from the `Land Value Sim` exemplar (T `0x6534284A` G `0xE7E2C2DB` I
+`0xE7E2C8D8`, property `0x47E2C301`; also there: intrinsic min/max `[1, 64]` at `0x47E2C300`, an
+altitude curve at `0x47E2C320` — documented for future simulation work, unused by the view).
+While a data view shows, `City.gd` hides the occupant roots (lot textures, buildings, lot
+structures, sprites, power spans) — with them visible only vacant lots' colours showed; networks
+stay drawn, as SC4 does.
+
+**Live rendering (step 1 of the simulation roadmap):** the wealth view no longer renders from
+the saved grid at all — the grid is occupant family+wealth, which is exactly what `LotModel`
+holds live, so `City._data_view_ramp_value` reads the lot model and follows `lots_changed`
+(razing a lot recolours it immediately; an abandoned-but-zoned tile shows its lot's wealth where
+the snapshot showed vacant). The saved grid remains the load-time identification gate. The
+harness checks the wiring end to end (`_check_data_view_live`: raze a lot, require the repaint).
+The plan for actually simulating these values is `dev_notes/simulation_plan.md`.
+
+## 13. Session log — 2026-08-07 (second pass): the simulation (plan steps 2–4), and what
+## the "pollution" grids really are
+
+`dev_notes/simulation_plan.md` steps 2–4 executed. The architecture is in `CLAUDE.md`
+(Simulation bullet) and each simulator's file header; this log records the FORMAT findings
+— two identifications, two corrections, and one negative result that reshaped the
+calibration story.
+
+### 0x49D5B964 / 0x49D5B953 are the flammability pair, not pollution
+
+§12 nominated these as the prime air-pollution candidates. Crosstabbing per BUILDING
+(not per tile) kills that: `0x49D5B964`'s dominant values are the building exemplars'
+`Flammability` property (0x29244DB5) **verbatim** — R$ families 40, dirty industry 80 —
+resolved through the family cohort chain, stamped over the lot rect. Exact per-tile
+agreement runs 0.66 (Tegel) to 0.95 (Rush Hour) across the populated saves; the shortfall
+is small decays (38 where 40 is expected) and lot garden tiles carrying their trees' value.
+The twins share one footprint and `0x49D5B964 = 0.8 × 0x49D5B953` within u8 rounding on
+≥99% of nonzero cells (85 of 7,816 differ on Big City, where the two are equal instead) —
+and 1/0.8 = 1.25 matches the "Flammability multiplier, summer" property family. So:
+**base** and **seasonally-multiplied** flammability. Consts + evidence on `SimGridSubfile`,
+gates in `_check_flammability_grids` (floors 0.60 exact / 0.98 pair relation).
+
+The pollution properties themselves live on the family cohorts too: "Pollution at centre"
+0x27812851 is `[air, water, garbage, radiation]`, SIGNED (trees absorb, −1/−2); "Pollution
+Radius" 0x68EE9764 the matching radii in tiles (dirty industry 13–20). Parsing cohorts
+needed one `ExemplarSubfile` change: accept signature CQZB alongside EQZB (byte-identical
+layouts); `Core.exemplar_prop(group, instance, prop)` walks exemplar → cohort chain with a
+flat cache.
+
+### 0x41800000 is the zone-type grid
+
+Crosstab against lot `zone_type` is single-valued on every zone (1→1, 4→4, 8→8, 9→9,
+15→15, plus 14 on special-zone tiles no lot claims): the save stores zoning per tile,
+verbatim. ≥99.6% agreement on every populated save; const on `SimGridSubfile`, gate in
+`_check_zone_grid`. (The dataId is the bit pattern of 16.0f — presumably an accident of
+whatever GUID the grid was registered under.)
+
+### 0x49D5BB8C / 0x49D5BBA1: ruled out as crime, not identified
+
+§12's crime candidates. The two are cell-identical on most saves (not all), tiny bitfield
+values ({0,2,8,10} on Big City: 2 on developed tiles, 8 along power-line corridors, 10
+both), which read as power — but only 19% of Tegel's lot tiles carry any value, so no
+power hypothesis survives either. Left unnamed; documented on `SimGridSubfile`.
+
+### The negative result: no save stores ANY simulated field
+
+With the twins reassigned to flammability, every 128×128 layer in the shipped saves is
+accounted for (traffic ×5 + six all-zero siblings, occupant codes, flammability ×2, zone
+type, the power-ish pair, and constant/flag layers). **There is no saved air pollution,
+land value, crime or desirability grid** — SC4 recomputes them all at load, exactly as §12
+established for land value alone. Consequence for the plan's "saved grids are ground
+truth" principle: pollution and crime are gated on STRUCTURE (dirty industry outpollutes
+residential — zone 7 farms are net absorbers and must not count as industry; $ outscores
+$$$; byte-identical fields under edit-free ticks; razing a polluting lot lowers the field
+at its tile), and land value on thresholded-wealth agreement, fitted offline across all
+populated saves (base 5 / neighbourhood-wealth ×45 / pollution −30; mean 0.82, worst
+0.57; harness floor 0.50). Traffic assignment IS gated against a saved target
+(`TRAFFIC_CAR`): precision 0.94–1.00, volume rank correlation 0.14–0.94 across saves
+(floors 0.85 / 0.10).
+
+Data-view wiring that fell out of this: "Maximum scale" (0x4A0B47EC) is now parsed — the
+Air Pollution view declares 1024 with ramp stops 128..255, so the field lives in 0..1024
+and maps linearly onto the stop range; Crime and Police share data-source enum 4, so those
+two are wired BY NAME (`DataViewCatalogue.NAME_TO_GRID`) instead of by enum.
+
 ## Appendix A — SimGrid layer inventory (dataIds)
 
 All 136 grids parse with the 55-byte header `size, crc, mem, u16 major, u8, u32 ownType,
 u32 dataId, u32 ?, u32 ?, u32 xSize, u32 zSize, u32 0, f32 16.0, f32 0.0625` followed by
 raw cell data. Grid resolutions in this save: 128×128 (1 tile/cell), 64×64, 32×32, 16×16.
-DataIds are the game's GUIDs for each data layer (power, pollution, land value, crime,
-traffic…); mapping dataId → layer name still needs to be pulled from the data-view
-exemplars in `SimCity_*.dat`.
+DataIds are the game's GUIDs for each data layer (power, pollution, crime, traffic…).
+Note the data-view exemplars do NOT name them — their "Data source" property is a private
+enum (§12) — so identification is empirical, layer by layer: the five `TRAFFIC_*` ids (§11),
+`0x49D5B678` occupant codes / wealth (§12), the `0x49D5B964`/`0x49D5B953` flammability pair,
+and `0x41800000` zone type (§13). `0x49D5BB8C`/`0x49D5BBA1` are ruled out as crime but not
+positively identified (§13).
 
-**SimGridUint8** (`0x49B9E602`, 46 grids): `0x49D5BC86` (128x128), `0x49D5BBA1` (128x128), `0x49D5BB8C` (128x128), `0x49D5B8F9` (64x64), `0x49D5BCB7` (128x128), `0x49D5BCA6` (128x128), `0x49D5BC96` (128x128), `0x69D5C303` (32x32), `0xAA8E1DC1` (32x32), `0x8A8DF4B6` (32x32), `0xCA8E449E` (32x32), `0xAA8DF4BD` (32x32), `0x8A8DF4C4` (32x32), `0xAA8DF4D4` (32x32), `0x69D5C30D` (32x32), `0xAA8E1DE4` (32x32), `0x8A8DF6FC` (32x32), `0x69D5C317` (32x32), `0x89D5BB39` (64x64), `0x49D5B953` (128x128), `0x49D5B964` (128x128), `0x89D5BB51` (64x64), `0x01003110` (32x32), `0x01001010` (32x32), `0x01001020` (32x32), `0x01004300` (32x32), `0x01001030` (32x32), `0x01003120` (32x32), `0x01003130` (32x32), `0x01004100` (32x32), `0x01003320` (32x32), `0x01003330` (32x32), `0x01004200` (32x32), `0x01004400` (32x32), `0x69D5C402` (128x128), `0x89D5B6EF` (128x128), `0x69D5C3BF` (128x128), `0xCABD2925` (32x32), `0x89D5B788` (128x128), `0x2A5BA1B3` (64x64), `0x49D5BBB9` (64x64), `0x89D5B895` (64x64), `0x49D5B678` (128x128), `0xCABD2926` (32x32), `0x69D5C424` (128x128), `0x89D5C3A2` (128x128)
+**SimGridUint8** (`0x49B9E602`, 46 grids): `0x49D5BC86` (128x128), `0x49D5BBA1` (128x128), `0x49D5BB8C` (128x128), `0x49D5B8F9` (64x64), `0x49D5BCB7` (128x128), `0x49D5BCA6` (128x128), `0x49D5BC96` (128x128), `0x69D5C303` (32x32), `0xAA8E1DC1` (32x32), `0x8A8DF4B6` (32x32), `0xCA8E449E` (32x32), `0xAA8DF4BD` (32x32), `0x8A8DF4C4` (32x32), `0xAA8DF4D4` (32x32), `0x69D5C30D` (32x32), `0xAA8E1DE4` (32x32), `0x8A8DF6FC` (32x32), `0x69D5C317` (32x32), `0x89D5BB39` (64x64), `0x49D5B953` (128x128), `0x49D5B964` (128x128), `0x89D5BB51` (64x64), `0x01003110` (32x32), `0x01001010` (32x32), `0x01001020` (32x32), `0x01004300` (32x32), `0x01001030` (32x32), `0x01003120` (32x32), `0x01003130` (32x32), `0x01004100` (32x32), `0x01003320` (32x32), `0x01003330` (32x32), `0x01004200` (32x32), `0x01004400` (32x32), `0x69D5C402` (128x128), `0x89D5B6EF` (128x128), `0x69D5C3BF` (128x128), `0xCABD2925` (32x32), `0x89D5B788` (128x128), `0x2A5BA1B3` (64x64), `0x49D5BBB9` (64x64), `0x89D5B895` (64x64), `0x49D5B678` (128x128, **occupant codes / wealth — §12**), `0xCABD2926` (32x32), `0x69D5C424` (128x128), `0x89D5C3A2` (128x128)
 
 **SimGridSint8** (`0x49B9E603`, 5 grids): `0x69D5B600` (32x32), `0x69D5B604` (32x32), `0x69D5B605` (32x32), `0x49D5B607` (32x32), `0x41800000` (128x128)
 

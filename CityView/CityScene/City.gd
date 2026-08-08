@@ -29,7 +29,7 @@ func _ready():
     region_name = Boot.current_region_name
     create_terrain()
     set_cursor()
-    pass
+    _setup_simulation()
 
 func gen_random_terrain(width : int, height : int) -> Array:
     var heightmap : Array = []
@@ -573,18 +573,25 @@ var network_graph : NetworkGraph = null
 # Line overlay drawing the graph over the city. Hidden until toggled with G.
 var network_debug : NetworkDebugDraw = null
 
-# SC4's own simulation data grids, dataId -> SimGridSubfile.Grid. Loaded on
-# demand rather than at city load: it is ~1.2 MB of cells across 136 layers and
-# nothing renders from it yet. Its value today is as ground truth -- the traffic
-# layers are the shipped game's own answer for which tiles carry traffic, which
-# is a far better check on the graph than anything we could invent.
-var sim_grids : Dictionary = {}
+# SC4's own simulation data grids. Loaded on demand rather than at city load:
+# it is ~1.2 MB of cells across 136 layers and only the data views and the
+# harness ground-truth checks read them. The traffic layers are the shipped
+# game's own answer for which tiles carry traffic -- a far better check on the
+# graph than anything we could invent -- and the land-value layer drives the
+# wealth data view (see SimGridSubfile.LAND_VALUE).
+var sim_grid_model : SimGrids = null
+var sim_grids : Dictionary = {}      # legacy view of sim_grid_model.grids
+
+func sim_grids_model() -> SimGrids:
+    if sim_grid_model == null:
+        sim_grid_model = SimGrids.from_save(savefile, size_w * 64)
+        sim_grids = sim_grid_model.grids
+        Log.info("SimGrids: %d layers loaded, %d layout failures"
+            % [sim_grid_model.size(), sim_grid_model.layout_failures])
+    return sim_grid_model
 
 func load_sim_grids() -> Dictionary:
-    if sim_grids.is_empty():
-        sim_grids = SimGridSubfile.load_all(savefile)
-        Log.info("SimGrids: %d layers loaded" % sim_grids.size())
-    return sim_grids
+    return sim_grids_model().grids
 
 # FSH group holding network surface textures; instance = family + zoom 0..4.
 # Same group the interactive build tool uses (TransitTiles.gd).
@@ -821,7 +828,7 @@ func _setup_network_tool():
     Log.info("Network pieces: %s" % network_pieces.stats())
     var renderer = $Node3D.get_node_or_null("NetworkRenderer")
     if renderer != null:
-        renderer.setup(network_pieces, network_model)
+        renderer.setup(network_pieces, network_model, lot_model)
     network_tool = get_node_or_null("NetworkTool")
     if network_tool != null:
         network_tool.setup(network_model, renderer, network_pieces,
@@ -996,6 +1003,238 @@ func toggle_graph_debug_pedestrians() -> void:
     if network_debug != null:
         network_debug.toggle_class(SC4PathSubfile.CLASS_SIM)
 
+# --- Data views (SimGrid layers painted onto the terrain) --------------------
+# SC4's data views recolour the ground itself, so these go through the terrain
+# shader (data_view_tex / data_view_on uniforms) rather than an overlay mesh:
+# one texel per tile, colours ramped CPU-side from the view's own exemplar.
+# Toggled with V, mirroring U/G above.
+var data_view_catalogue : DataViewCatalogue = null
+var data_view_active = null      # DataViewCatalogue.DataView or null
+var data_view_label : Label = null
+var data_view_image : Image = null           # last painted view, per tile
+var _data_view_repaint_queued : bool = false
+
+# Occupant roots hidden while a data view is showing, as SC4 does: the view
+# is about the ground, and lot textures and buildings would bury the very
+# tiles the view colours (verified: with them visible only vacant lots show).
+# Networks stay -- SC4 draws the roads in its data views too.
+const DATA_VIEW_HIDDEN_NODES : Array = [
+    "LotTextures", "Buildings", "LotStructures", "PropSprites", "PowerSpans",
+]
+
+func _set_data_view_occupants_visible(on : bool) -> void:
+    for node_name in DATA_VIEW_HIDDEN_NODES:
+        var node = $Node3D.get_node_or_null(node_name)
+        if node != null:
+            node.visible = on
+
+func _data_view_catalogue() -> DataViewCatalogue:
+    if data_view_catalogue == null:
+        data_view_catalogue = DataViewCatalogue.new()
+        var n = data_view_catalogue.load_from_core()
+        Log.info("DataViews: %d views in catalogue, %d mapped to grids"
+            % [n, data_view_catalogue.mapped_views().size()])
+    return data_view_catalogue
+
+# Whether `view` renders from live city state rather than the saved grid.
+# The wealth (Land value) view does: its saved grid is just occupant
+# family+wealth codes, which is exactly what LotModel holds -- and the model
+# moves when lots are razed, where the snapshot cannot. The saved grid stays
+# the load-time ground truth (the harness gate), not the render source.
+func _data_view_is_live(view) -> bool:
+    return view != null and view.data_source == 2 and lot_model != null
+
+# Per-tile value in the ramp's domain for `view`. The Land value view has two
+# live sources: the simulated continuous field (default -- the gradient the
+# 12-stop ramp was made for) or the lot model's wealth classes
+# (land_value_simulated = false, the honest view of saved state). Both follow
+# edits: the field through grids_changed, the classes through lots_changed.
+# Everything else reads its saved grid through the view's decode transform.
+func _data_view_ramp_value(view, tx : int, tz : int) -> float:
+    if _data_view_is_live(view):
+        if land_value_simulated \
+                and sim_grids_model().has(SimGrids.DERIVED_LAND_VALUE):
+            return sim_grids_model().value_at_tile(SimGrids.DERIVED_LAND_VALUE, tx, tz)
+        var lot = lot_model.lot_at(Vector2i(tx, tz))
+        var wealth : int = 0 if lot == null else lot.zone_wealth
+        return DataViewCatalogue.WEALTH_TO_LAND_VALUE[wealth]
+    return view.ramp_value(sim_grids_model().value_at_tile(view.data_id, tx, tz))
+
+# Switches the Land value view between the simulated gradient and the saved
+# wealth classes, repainting if it is showing.
+func set_land_value_simulated(on : bool) -> void:
+    if land_value_simulated == on:
+        return
+    land_value_simulated = on
+    if data_view_active != null and data_view_active.data_source == 2:
+        set_data_view(data_view_active)
+
+# Paints `view` through its colour ramp into a map-sized texture and hands it
+# to the terrain shader. `null` switches the view off.
+func set_data_view(view) -> void:
+    var mat = $Node3D/Terrain.get_material_override()
+    data_view_active = view
+    if view == null or view.data_id == 0:
+        data_view_active = null
+        data_view_image = null
+        mat.set_shader_parameter("data_view_on", false)
+        _set_data_view_occupants_visible(true)
+        _update_data_view_hud()
+        return
+    var tiles : int = size_w * 64
+    var img := Image.create(tiles, tiles, false, Image.FORMAT_RGBA8)
+    for tz in range(tiles):
+        for tx in range(tiles):
+            img.set_pixel(tx, tz, view.color_for(_data_view_ramp_value(view, tx, tz)))
+    data_view_image = img
+    mat.set_shader_parameter("data_view_tex", ImageTexture.create_from_image(img))
+    mat.set_shader_parameter("data_view_on", true)
+    if lot_model != null and not lot_model.lots_changed.is_connected(_on_lots_changed_data_view):
+        lot_model.lots_changed.connect(_on_lots_changed_data_view)
+    _set_data_view_occupants_visible(false)
+    _update_data_view_hud()
+
+# Live views follow lot edits. The repaint is deferred and coalesced, like
+# NetworkDebugDraw.queue_rebuild: one bulldozed drag emits one repaint.
+func _on_lots_changed_data_view(_cells : Array) -> void:
+    if not _data_view_is_live(data_view_active) or _data_view_repaint_queued:
+        return
+    _data_view_repaint_queued = true
+    _repaint_data_view.call_deferred()
+
+func _repaint_data_view() -> void:
+    _data_view_repaint_queued = false
+    if data_view_active != null:
+        set_data_view(data_view_active)
+
+# By catalogue name ("Land value"), for harnesses. False if there is no such
+# renderable view.
+func set_data_view_named(view_name : String) -> bool:
+    var view = _data_view_catalogue().view_named(view_name)
+    if view == null or view.data_id == 0:
+        Log.warn("No renderable data view named '%s'" % view_name)
+        return false
+    set_data_view(view)
+    return true
+
+# V cycles off -> each renderable view in catalogue order -> off. A mapped
+# view whose layer holds no data yet (a derived field before its simulator
+# has run) is skipped rather than shown blank.
+func toggle_data_view() -> bool:
+    var mapped : Array = []
+    for view in _data_view_catalogue().mapped_views():
+        if view.data_source == 2 or sim_grids_model().has(view.data_id):
+            mapped.append(view)
+    if mapped.is_empty():
+        return false
+    var i = mapped.find(data_view_active)
+    set_data_view(null if i == mapped.size() - 1 else mapped[i + 1])
+    return data_view_active != null
+
+func _update_data_view_hud():
+    if data_view_label == null:
+        var canvas = get_node_or_null("UICanvas")
+        if canvas == null:
+            return
+        data_view_label = Label.new()
+        data_view_label.name = "DataView"
+        data_view_label.position = Vector2(12, 36)
+        data_view_label.add_theme_color_override("font_color", Color(1, 1, 1))
+        data_view_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+        data_view_label.add_theme_constant_override("outline_size", 4)
+        canvas.add_child(data_view_label)
+    data_view_label.visible = data_view_active != null
+    if data_view_active != null:
+        data_view_label.text = "Data view: %s      V to cycle" % data_view_active.name
+
+# --- Simulation (dev_notes/simulation_plan.md) -------------------------------
+# The game clock and the field simulators that run on it. Systems are
+# registered in DEPENDENCY order -- land value reads the pollution field,
+# crime reads land value -- and each one reads the models (LotModel,
+# building_records, NetworkModel) and writes derived SimGrids layers; the
+# data views repaint off grids_changed without knowing any simulator exists.
+# The clock starts PAUSED: Space cycles pause -> 1x -> 3x, and headless
+# harnesses call simulation.step() directly instead of relying on frame time.
+var simulation : Simulation = null
+var sim_systems : Dictionary = {}   # name -> the simulator object (also kept alive here)
+var building_records : Array = []   # kept for the simulators; placement uses them once
+var sim_label : Label = null
+
+# Renders the Land value view from the simulated continuous field (true, the
+# default) or from the live per-lot wealth classes (false) -- the step-1
+# rendering, kept because it is the honest view of SAVED state where the
+# gradient is our simulation's opinion.
+var land_value_simulated : bool = true
+
+func _setup_simulation():
+    if savefile == null:
+        return
+    var grids := sim_grids_model()
+    grids.grids_changed.connect(_on_grids_changed)
+    simulation = Simulation.new()
+    sim_systems = {
+        "traffic": TrafficSim.new(self),
+        "pollution": PollutionSim.new(self),
+        "land value": LandValueSim.new(self),
+        "crime": CrimeSim.new(self),
+    }
+    # Traffic first: pollution consumes volumes (the saved snapshot when the
+    # city has one, ours otherwise), land value consumes pollution, crime
+    # consumes land value.
+    for system_name in ["traffic", "pollution", "land value", "crime"]:
+        simulation.add_system(system_name, Callable(sim_systems[system_name], "tick"))
+    simulation.month_ticked.connect(func(_month): _update_sim_hud())
+    # One tick at load so every derived field exists before anything renders
+    # or checks -- the same state SC4 recomputes when it opens a city.
+    simulation.step()
+    Log.info("Simulation ready: systems %s, month %d" % [simulation.system_names(), simulation.month])
+
+# Derived layers repaint the active data view exactly the way lot edits do:
+# deferred and coalesced.
+func _on_grids_changed(ids : Array) -> void:
+    var view = data_view_active
+    if view == null or _data_view_repaint_queued:
+        return
+    var relevant : bool = ids.has(view.data_id) \
+        or (view.data_source == 2 and land_value_simulated and ids.has(SimGrids.DERIVED_LAND_VALUE))
+    if relevant:
+        _data_view_repaint_queued = true
+        _repaint_data_view.call_deferred()
+
+# Space cycles the clock. Called from CameraAnchor3D like the view toggles.
+func cycle_sim_speed() -> int:
+    if simulation == null:
+        return Simulation.SPEED_PAUSED
+    var speed := simulation.cycle_speed()
+    _update_sim_hud()
+    return speed
+
+func _update_sim_hud():
+    if sim_label == null:
+        var canvas = get_node_or_null("UICanvas")
+        if canvas == null:
+            return
+        sim_label = Label.new()
+        sim_label.name = "SimClock"
+        sim_label.position = Vector2(12, 60)
+        sim_label.add_theme_color_override("font_color", Color(1, 1, 1))
+        sim_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+        sim_label.add_theme_constant_override("outline_size", 4)
+        canvas.add_child(sim_label)
+    if simulation == null:
+        sim_label.visible = false
+        return
+    sim_label.visible = simulation.speed != Simulation.SPEED_PAUSED or simulation.month > 1
+    var speed_name : String
+    match simulation.speed:
+        Simulation.SPEED_PAUSED:
+            speed_name = "paused"
+        Simulation.SPEED_NORMAL:
+            speed_name = "1x"
+        _:
+            speed_name = "3x"
+    sim_label.text = "Month %d  [%s]      Space to change speed" % [simulation.month, speed_name]
+
 # Reads the game's own index over the network subfiles. Nothing renders from it
 # -- it is the authority for "which occupant is on this tile", which simulation
 # and tool work will need. See NetworkIndexSubfile for what is and is not
@@ -1038,6 +1277,7 @@ func load_buildings():
         return
     var idx = bindex[0]
     var bsub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, BuildingSubfile)
+    building_records = bsub.records
     Log.info("Building subfile: %d records" % bsub.records.size())
 
     building_root = Node3D.new()
@@ -1755,6 +1995,8 @@ func _sprite_page(fsh_tgi : Array, page : int) -> Variant:
 # Advances time-animated sprites. Static ones (traffic lights) never enter
 # animated_sprites, so a city without animated props costs nothing here.
 func _process(delta : float) -> void:
+    if simulation != null:
+        simulation.advance(delta)
     if animated_sprites.is_empty():
         return
     sprite_clock += delta

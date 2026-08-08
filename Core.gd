@@ -61,6 +61,13 @@ var type_dict_to_text = {
     0x49c05c9f: "Lot retaining wall subfile",
     0x49c05c8f: "Lot foundation subfile",
     0x6a0f82b2: "Network index subfile",
+    # SimGrid layers (city saves) -- parsed by SimGridSubfile, by class.
+    0x49b9e602: "SimGrid Uint8 subfile",
+    0x49b9e603: "SimGrid Sint8 subfile",
+    0x49b9e604: "SimGrid Uint16 subfile",
+    0x49b9e605: "SimGrid Sint16 subfile",
+    0x49b9e606: "SimGrid Uint32 subfile",
+    0x49b9e60a: "SimGrid Float32 subfile",
 }
 
 # This dictionary should actually be a dictionary of dictionaries (type -> group)
@@ -300,3 +307,44 @@ func add_dbpf(dbpf : DBPF):
 
 func get_gamedata_path(path: String) -> String:
     return "%s/%s" % [Core.game_dir, path]
+
+# --- Exemplar property resolution with cohort inheritance --------------------
+# A growable building's exemplar carries almost none of its simulation
+# properties itself: Pollution at centre, Flammability, Land Value Effect and
+# friends live on the building FAMILY's cohort (type 0x05342861, signature
+# CQZB -- same layout as EQZB, see ExemplarSubfile), reachable through the
+# exemplar's parent_cohort chain. This resolves a property the way SC4 does:
+# own properties first, then each ancestor cohort in turn.
+
+const COHORT_TYPE : int = 0x05342861
+
+# (group << 32 | instance) << shift | prop -- flat cache of resolved values.
+# null is cached too: most lookups miss (not every occupant pollutes).
+var _exemplar_prop_cache : Dictionary = {}
+
+func exemplar_prop(group_id : int, instance_id : int, prop_id : int):
+    var key := "%08x%08x%08x" % [group_id, instance_id, prop_id]
+    if _exemplar_prop_cache.has(key):
+        return _exemplar_prop_cache[key]
+    var value = null
+    var type_id := 0x6534284a         # start at the exemplar itself
+    var gid := group_id
+    var iid := instance_id
+    for _depth in range(8):           # cohort chains are 2-3 deep in practice
+        if not subfile_indices.has(SubfileTGI.TGI2str(type_id, gid, iid)):
+            break
+        var ex = subfile(type_id, gid, iid, ExemplarSubfile)
+        if ex == null:
+            break
+        if ex.properties.has(prop_id):
+            value = ex.properties[prop_id]
+            break
+        var parent_g : int = ex.parent_cohort.get("G", 0)
+        var parent_i : int = ex.parent_cohort.get("I", 0)
+        if parent_g == 0 and parent_i == 0:
+            break
+        type_id = COHORT_TYPE
+        gid = parent_g
+        iid = parent_i
+    _exemplar_prop_cache[key] = value
+    return value

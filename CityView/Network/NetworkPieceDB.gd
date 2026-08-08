@@ -51,7 +51,17 @@ var texture_array : Texture2DArray = null
 
 func _init():
     _load_rules()
+    _register_base_textures()
     _pack_textures()
+
+# The ground families a network tile draws underneath its piece appear in no RUL
+# file -- the save carries them per tile instead -- so they have to be added to
+# the pack explicitly or a drawn road has no sidewalk to show through the gaps
+# in its piece texture. See NetworkBaseTexture.
+func _register_base_textures() -> void:
+    for iid in NetworkBaseTexture.FAMILIES:
+        if not layer_ids.has(iid) and _texture_exists(iid):
+            layer_ids.append(iid)
 
 func _load_rules() -> void:
     for rul_id in RUL_NETWORKS.keys():
@@ -137,6 +147,11 @@ func texture_id_for_layer(layer : int) -> int:
     if layer < 0 or layer >= layer_ids.size():
         return 0
     return layer_ids[layer]
+
+# The inverse: the Texture2DArray layer a texture id was packed into, or -1 if
+# it is not in the pack (its FSH is missing from the loaded DATs).
+func layer_for_texture(iid : int) -> int:
+    return layer_ids.find(iid)
 
 func stats() -> Dictionary:
     var shapes := 0

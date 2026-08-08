@@ -65,6 +65,56 @@ const TRAFFIC_CONGESTION : int = 0x69d5c40e # f32, small values, looks like a ra
 const TRAFFIC_WALK : int = 0x69d5c402       # u8, heaviest on streets
 const TRAFFIC_CAR_ALT : int = 0x89d5c3a2    # u8, near-zero on rail
 
+# Zone-occupant codes, u8 128x128 -- the save's wealth grid. No shipped save
+# stores a continuous land-value layer (SC4 recomputes land value at load;
+# every candidate grid was checked against per-tile lot wealth across four
+# saves and none has that profile). What IS saved is this layer: which
+# occupant family developed each tile, as family-base-plus-wealth codes.
+# Identified the same way as TRAFFIC_*: empirically, not from a label --
+# crosstabbed against per-tile lot zone_wealth over all 12 populated saves,
+# every nonzero code maps to exactly one wealth class with zero exceptions.
+const OCCUPANT_CODE : int = 0x49d5b678      # u8, decode with OCCUPANT_CODE_WEALTH
+
+# Flammability, u8 128x128, a pair. Identified per building: stamping each
+# building exemplar's "Flammability" property (0x29244DB5, resolved through
+# the family cohort chain) over its lot rect reproduces FLAMMABILITY_BASE
+# exactly on 78.6% of nonzero cells of Big City Tutorial, and the dominant
+# values ARE the property values verbatim (R$ families 40, dirty industry
+# 80); the remainder are small decays (38 for 40) and lot garden tiles
+# carrying their trees' value instead of the house's. The two grids share
+# one footprint and EFFECTIVE = BASE * 1.25 on all but 85 of 7,816 cells --
+# 1.25 matching the "Flammability multiplier, summer" property family.
+# NOTE: dev_notes/simulation_plan.md nominated this pair as the prime AIR
+# POLLUTION candidates ("smooth twins"); that guess was wrong, and with it
+# ruled out the save stores no pollution field at all.
+const FLAMMABILITY_BASE : int = 0x49d5b964
+const FLAMMABILITY_EFFECTIVE : int = 0x49d5b953
+
+# Zone type per tile, u8 128x128, verbatim from the lot records: crosstab
+# against lot zone_type over Big City Tutorial is single-valued on every
+# zone (1->1, 4->4, 8->8, 9->9, 15->15), plus 14 on the special-zone tiles
+# no lot claims. The harness gates on this equivalence.
+const ZONE_TYPE : int = 0x41800000
+
+# NOT identified, but ruled out as crime (the plan's guess for them):
+# 0x49D5BB8C / 0x49D5BBA1 are a near-identical pair of small bitfields
+# (values 0,1,2,3,8,9,10,11,15) that light up developed tiles and follow
+# power-line corridors on Big City Tutorial -- power-ish -- but only 19% of
+# Tegel's lot tiles carry a value, so no power hypothesis survives all the
+# saves and no gate can be built. Left unnamed until someone explains Tegel.
+
+# code -> wealth 0..3 (none/$/$$/$$$), from that crosstab. Families read as
+# 0 vacant/abandoned, 1 plopped civic, 6/7/8 R$/R$$/R$$$, 10/11/12 CS,
+# 15/16 CO$$/CO$$$, 22 farm, 27/31 heavier industry. Codes not in the table
+# have never been observed; treat them as wealth 0.
+const OCCUPANT_CODE_WEALTH : Dictionary = {
+    0: 0, 1: 0,
+    6: 1, 7: 2, 8: 3,
+    10: 1, 11: 2, 12: 3,
+    15: 2, 16: 3,
+    22: 1, 27: 2, 31: 2,
+}
+
 class Grid:
     var data_id : int
     var width : int
@@ -154,13 +204,22 @@ func grid(data_id : int):
     return grids.get(data_id)
 
 # Loads every SimGrid subfile of a save into one dataId -> Grid dictionary.
-static func load_all(savefile) -> Dictionary:
+# `stats`, when supplied, receives {"layout_failures": int, "subfiles": int}
+# so callers (the headless harness) can assert on parse health -- otherwise
+# each subfile's layout_failures counter would be silently discarded here.
+static func load_all(savefile, stats : Dictionary = {}) -> Dictionary:
     var out : Dictionary = {}
+    var failures := 0
+    var subfile_count := 0
     for type_id in ALL_TYPES:
         for idx in savefile.indices_by_type.get(type_id, []):
             var sub = savefile.get_subfile(idx.type_id, idx.group_id, idx.instance_id, SimGridSubfile)
             if sub == null:
                 continue
+            subfile_count += 1
+            failures += sub.layout_failures
             for data_id in sub.grids.keys():
                 out[data_id] = sub.grids[data_id]
+    stats["layout_failures"] = failures
+    stats["subfiles"] = subfile_count
     return out

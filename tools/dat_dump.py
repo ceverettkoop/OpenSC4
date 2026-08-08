@@ -265,7 +265,9 @@ def parse_exemplar(data):
             length = struct.unpack_from("<I", data, ind)[0]
             ind += 4
             if fmt == 0xC:                        # string
-                value = data[ind:ind + length - 1].decode("ascii", "replace")
+                # `length` is the exact byte count; these strings are not
+                # NUL-terminated, so do not shave a byte off the end.
+                value = data[ind:ind + length].decode("ascii", "replace")
                 ind += length
             else:
                 value = []

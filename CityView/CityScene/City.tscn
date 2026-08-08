@@ -206,6 +206,13 @@ uniform float tiling_factor;
 uniform float water_height = 15.625; //250.0/16.0
 uniform bool grid_bool = false;
 uniform float beach_ht_range;
+// Data-view overlay (City.set_data_view): one texel per tile, colours already
+// ramped CPU-side, alpha = overlay strength. filter_nearest + texelFetch keep
+// cells crisp; SC4's 'Interpolate data' spatial smoothing would be texture()
+// with filter_linear and a half-texel offset, deliberately not done yet.
+// Off by default so the shader output is bit-identical when unused.
+uniform sampler2D data_view_tex : filter_nearest;
+uniform bool data_view_on = false;
 varying float norm_x;
 varying float norm_y;
 varying float norm_z;
@@ -291,6 +298,15 @@ void fragment()
 				+ (overlay * over_str)
 				)
 			) * grid;
+	if (data_view_on) {
+		// coord_pass is object-space, so the lookup survives view rotation.
+		// Clamp: the far edge's vertices sit at exactly coord == map size,
+		// one texel past the end.
+		ivec2 dv_size = textureSize(data_view_tex, 0);
+		ivec2 dv_coord = clamp(ivec2(coord_pass.xz), ivec2(0), dv_size - ivec2(1));
+		vec4 dv = texelFetch(data_view_tex, dv_coord, 0);
+		ALBEDO = mix(ALBEDO, dv.rgb, dv.a);
+	}
 	//ALBEDO = vec3(normal.g)*2.0-1.0;
 
 	}"
@@ -428,6 +444,18 @@ void fragment(){
 	if(built == 0.0){
 		col = COLOR;
 		alpha = col.a;
+		}
+	// Scissor rather than blend the cleared parts of a piece texture. A road
+	// tile draws its ground family underneath it (NetworkBaseTexture) and 24-31%
+	// of a piece texture is transparent so that ground shows through. With
+	// depth_draw_always and no discard those cleared pixels still write depth,
+	// and whichever of the two quads the transparent pass happened to draw
+	// first would hide the other -- the ground quad is only 0.02 below the
+	// piece, so their AABBs sort unpredictably. Discarding makes the pair
+	// order-independent: the ground fails the depth test exactly where the
+	// piece is solid, and draws everywhere the piece cleared.
+	if(built == 1.0 && alpha < 0.5){
+		discard;
 		}
 	ALBEDO = frag.rgb * col.rgb;
 	ALPHA = alpha;

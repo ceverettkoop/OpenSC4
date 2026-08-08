@@ -16,9 +16,12 @@ func load(file, dbdf=null):
     file.seek(index.location)
     ind = 0
     assert(len(raw_data) > 0) #,"DBPFSubfile.load: no data")
-    # 4 bytes (char) - signature
+    # 4 bytes (char) - signature. EQZB is an exemplar, CQZB a cohort (type
+    # 0x05342861); the two formats are byte-identical after the signature,
+    # and cohorts are what growable buildings inherit their simulation
+    # properties (pollution, flammability...) from -- see Core.exemplar_prop.
     var signature = raw_data.slice(ind, ind+4).get_string_from_ascii()
-    assert(signature == "EQZB") #,"DBPFSubfile.load: not an Exemplar file")
+    assert(signature == "EQZB" or signature == "CQZB") #,"DBPFSubfile.load: not an Exemplar/Cohort file")
     ind += 4
     # 4 bytes - parent cohort indicator always 0x23232331
     ind += 4
@@ -45,7 +48,11 @@ func load(file, dbdf=null):
             length = self.get_int_from_bytes(raw_data.slice(ind, ind+4))
             ind += 4
             if format == 0xC: #string
-                value = raw_data.slice(ind, ind+(length-1)).get_string_from_ascii()
+                # `length` is the exact byte count -- exemplar strings are NOT
+                # NUL-terminated (verified: 0 of 9,230 string properties across
+                # the eight shipped DATs end in 0x00), so slicing to length-1
+                # dropped the final character of every name ("Constructio").
+                value = raw_data.slice(ind, ind+length).get_string_from_ascii()
                 ind += length
             else:
                 value = []

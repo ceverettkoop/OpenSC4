@@ -49,6 +49,20 @@ var built_arrays : Array = []
 var drag_tracker : Array = []
 var built_tracker : Array = []
 var drag_meshinst = MeshInstance3D.new()
+# The ground ("sidewalk") layer under the tiles this renderer drew, and its own
+# mesh instance. It is kept apart from `built_arrays` on purpose: that array
+# pairs one 6-vertex block with one `built_tracker` entry and de-duplicates by
+# the FIRST entry matching a location, so a second quad per cell would collide
+# with the first on every redraw. Rebuilt wholesale instead -- only user-drawn
+# tiles are in here (the save's own ground quads are City.gd's), so it is small.
+var base_meshinst = MeshInstance3D.new()
+# location -> {"verts": Array[Vector3], "uvs": Array[Vector2]}, the surface quad
+# as it was emitted. The ground quad is that same quad dropped to BASE_LIFT, so
+# it stays parallel to the piece over sloped ground for free.
+var drag_quads : Dictionary = {}
+var built_quads : Dictionary = {}
+# The lots beside a tile decide its ground family. Set by City.gd via setup().
+var lots = null
 var layer_map = []
 var map_width : int
 var map_height : int
@@ -83,9 +97,10 @@ var neigh_num_to_vec = [
 
 # Set up by City.gd once the piece database and the model exist. Nothing here
 # loads game data any more -- NetworkPieceDB does that once and is shared.
-func setup(db : NetworkPieceDB, network_model : NetworkModel) -> void:
+func setup(db : NetworkPieceDB, network_model : NetworkModel, lot_model = null) -> void:
     piece_db = db
     model = network_model
+    lots = lot_model
     transit_tiles = db.pieces
     layer_arr = db.layer_ids
     textarr = db.texture_array
@@ -97,7 +112,11 @@ func setup(db : NetworkPieceDB, network_model : NetworkModel) -> void:
             % ["ok" if mat != null else "MISSING", "ok" if textarr else "MISSING"])
     if drag_meshinst.get_parent() == null:
         add_child(drag_meshinst)
+    if base_meshinst.get_parent() == null:
+        base_meshinst.name = "GroundLayer"
+        add_child(base_meshinst)
     drag_meshinst.set_material_override(mat)
+    base_meshinst.set_material_override(mat)
     set_material_override(mat)
 
 # --- the tool's interface ----------------------------------------------------
@@ -109,6 +128,7 @@ func clear_preview() -> void:
     drag_arrays = []
     drag_tiles = {}
     drag_tracker = []
+    drag_quads = {}
     if drag_meshinst.mesh != null and drag_meshinst.mesh.get_surface_count() > 0:
         drag_meshinst.mesh = null
 
@@ -175,7 +195,11 @@ func commit_draw() -> Array:
     drag_meshinst.set_material_override(mat)
     if model == null or records.is_empty():
         return []
-    return model.place(records)
+    var dirty = model.place(records)
+    # After place(), so the ground family is picked from tiles that are already
+    # in the model -- _rebuild_base_mesh reads base_texture back off it.
+    _rebuild_base_mesh()
+    return dirty
 
 # Turns one solved tile into the record NetworkModel keeps. The RUL 3-line
 # gives the texture and a rotation/flip pair, which is exactly the piece id and
@@ -215,6 +239,11 @@ func _to_model_tile(loc : Vector2, tile) -> Variant:
             record.network_types.append(crossing["type"])
     record.base_height = _tile_height(record.cell)
     record.source = NetworkModel.SOURCE_USER
+    # The sidewalk/verge under the piece. The save stores this per tile; a drawn
+    # tile has to derive it from the lots beside it. Keeping it on the model
+    # record rather than only in the mesh means a tile that came from a drag and
+    # one that came from the save answer the same question the same way.
+    record.base_texture = NetworkBaseTexture.pick(record.cell, lots)
     return record
 
 static func _network_type_index(network : String) -> int:
@@ -231,6 +260,10 @@ func forget_cells(cells : Array) -> void:
             touched = true
     if touched:
         _rebuild_built_mesh(cells)
+    # Unconditional: a multi-tile piece keeps ground quads at sub-tile locations
+    # that were never keys in network_tiles, so `touched` does not cover them.
+    _prune_base_quads()
+    _rebuild_base_mesh()
 
 # Rebuilds the committed mesh, dropping any quad whose cell no longer holds a
 # tile. built_tracker records the cell each vertex belongs to, so this is a
@@ -272,6 +305,67 @@ func _rebuild_built_mesh(_cells : Array) -> void:
             mesh = ArrayMesh.new()
         mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, get_mesh_arrays(built_arrays))
 
+# --- the ground layer --------------------------------------------------------
+#
+# One quad per drawn tile, textured with the family NetworkBaseTexture picks and
+# sitting BASE_LIFT under the piece. Rebuilt whole rather than patched: the set
+# is only the tiles this renderer drew, and a partial update would have to track
+# quads by cell inside a flat array, which is exactly the de-duplication trap
+# `built_arrays` already sets (see the note on base_meshinst).
+
+# Drops ground quads whose cell is no longer ours -- same ownership test as
+# _rebuild_built_mesh, so the two layers cannot disagree about what is placed.
+func _prune_base_quads() -> void:
+    for loc in built_quads.keys():
+        var tile = model.get_tile(Vector2i(int(loc.x), int(loc.y))) if model != null else null
+        if network_tiles.has(loc) or (tile != null and tile.source != NetworkModel.SOURCE_SAVE):
+            continue
+        built_quads.erase(loc)
+
+func _rebuild_base_mesh() -> void:
+    for loc in drag_quads.keys():
+        built_quads[loc] = drag_quads[loc]
+    drag_quads = {}
+    if piece_db == null:
+        return
+    var verts := PackedVector3Array()
+    var uvs := PackedVector2Array()
+    var uv2 := PackedVector2Array()
+    var normals := PackedVector3Array()
+    var colours := PackedColorArray()
+    var up := Vector3(0, 1, 0)
+    var white := Color(1, 1, 1, 1)
+    for loc in built_quads.keys():
+        var tile = model.get_tile(Vector2i(int(loc.x), int(loc.y))) if model != null else null
+        if tile == null or tile.base_texture == NetworkBaseTexture.NONE:
+            continue
+        var layer := piece_db.layer_for_texture(tile.base_texture)
+        if layer < 0:
+            continue
+        # Same split the piece quads use: low byte in UV2.r, high byte in UV2.g,
+        # and 128 added to UV2.g to mark the quad as built rather than previewed.
+        var layer_vec := Vector2(layer & 0xFF, ((layer & 0xFF00) >> 8) + 128)
+        var quad = built_quads[loc]
+        for i in range(6):
+            verts.append(quad["verts"][i])
+            uvs.append(quad["uvs"][i])
+            uv2.append(layer_vec)
+            normals.append(up)
+            colours.append(white)
+    if verts.is_empty():
+        base_meshinst.mesh = null
+        return
+    var arrays := []
+    arrays.resize(ArrayMesh.ARRAY_MAX)
+    arrays[ArrayMesh.ARRAY_VERTEX] = verts
+    arrays[ArrayMesh.ARRAY_NORMAL] = normals
+    arrays[ArrayMesh.ARRAY_COLOR] = colours
+    arrays[ArrayMesh.ARRAY_TEX_UV] = uvs
+    arrays[ArrayMesh.ARRAY_TEX_UV2] = uv2
+    var out := ArrayMesh.new()
+    out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    base_meshinst.mesh = out
+
 # Terrain height at a tile centre, in world units.
 func _tile_height(cell : Vector2i) -> float:
     var terrain = get_parent().get_node_or_null("Terrain")
@@ -287,6 +381,11 @@ func _tile_height(cell : Vector2i) -> float:
 # lifts the save's network quads (NETWORK_SURFACE_LIFT), which also keeps them
 # above the lot base textures at 0.015 + 0.004 * 7 = 0.043.
 const SURFACE_LIFT : float = 0.075
+# The ground/sidewalk quad sits just under the piece, the same 0.02 apart as
+# City.gd holds the save's own pair (NETWORK_BASE_LIFT 0.055 under
+# NETWORK_SURFACE_LIFT 0.075), so a drawn road and a shipped one that meet at a
+# tile boundary line up instead of stepping.
+const BASE_LIFT : float = 0.055
 # Height a bulldoze highlight sits above the terrain, clear of the road quads.
 const BULLDOZE_LIFT : float = 0.09
 
@@ -335,6 +434,7 @@ func _drag_network(start, end, type):
     self.drag_arrays[ArrayMesh.ARRAY_TEX_UV2] = [] 
     self.drag_tiles = {}
     drag_tracker = []
+    drag_quads = {}
     var heightmap = self.get_parent().get_node("Terrain").heightmap
     if len(layer_map) == 0:
         self.map_width = len(heightmap[0])
@@ -742,6 +842,12 @@ func _drag_network(start, end, type):
                         flip_uvs = rot_uvs
                     var normal_verts = []
                     var sub_vec = edges[1][h_i] + neigh_num_to_vec[sub_tile]
+                    # Kept so the ground quad under this tile can be the same
+                    # six vertices dropped to BASE_LIFT -- reconstructing them
+                    # from the cell would lose the solver's per-corner heights
+                    # and float off a sloped road. See _rebuild_base_mesh.
+                    var quad_verts : Array = []
+                    var quad_uvs : Array = []
                     for vec_i in range(6):
                         var vec = sub_vec + corners[vecadd[vec_i]]
                         var vec_ht = strip_heights[h_i + step_seq[vecadd[vec_i]]]
@@ -751,6 +857,9 @@ func _drag_network(start, end, type):
                         self.drag_arrays[ArrayMesh.ARRAY_TEX_UV2].append(layer_vec)
                         self.drag_tracker.append(sub_vec)
                         normal_verts.append(Vector3(vec.x, vec_ht/16.0 + SURFACE_LIFT, vec.y))
+                        quad_verts.append(Vector3(vec.x, vec_ht/16.0 + BASE_LIFT, vec.y))
+                        quad_uvs.append(corner_uvs[vecadd[vec_i]])
+                    drag_quads[sub_vec] = {"verts": quad_verts, "uvs": quad_uvs}
                     # vecadd = [0,3,1,1,3,2] or [1,0,2,2,0,3]
                     # indices   0 1 2 3 4 5		 0 1 2 3 4 5
                     # ind 1 == 4 is used as the anchors

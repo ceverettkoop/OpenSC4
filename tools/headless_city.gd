@@ -263,10 +263,14 @@ func _check_graph(city, model) -> bool:
 
     ok = _check_rail_purity(model, graph) and ok
     ok = _check_against_simulation(city, model, graph) and ok
+    ok = _check_data_views(city) and ok
     ok = _check_incremental(city, model, graph) and ok
     ok = _check_tool(city, model, graph) and ok
     ok = _check_crossing(city, model, graph) and ok
     ok = _check_lot_bulldoze(city, model) and ok
+    ok = _check_ground_layer(city, model) and ok
+    ok = _check_data_view_live(city) and ok
+    ok = _check_simulation(city) and ok
     return ok
 
 # Drawing a road over a zoned building, and bulldozing lots directly.
@@ -697,6 +701,167 @@ func _check_save_tile_bulldoze(city, model, tool) -> bool:
         ok = false
     return ok
 
+# The ground ("sidewalk") layer under drawn roads.
+#
+# A network tile draws two quads: the piece on top and an opaque ground family
+# underneath, showing through the 24-31% of the piece texture that is cleared.
+# The save records that family per tile; a drawn tile has to derive it from the
+# lots beside it (NetworkBaseTexture). The first check below is the one that
+# matters -- it scores the derived rule against the save's own answer, so a
+# change to the rule, to LotModel or to the lot-cell index shows up as a number
+# rather than as a road that quietly loses its kerb.
+#
+# The floor is well under the rule's real accuracy on purpose. Measured over all
+# eight populated saves the rule lands at 93.0%, but per city it ranges from
+# 72.9% (Konradshohe, dense $$$ and heavy industry, where SC4's own kerb follows
+# land value rather than the zoning next door) to 98.0% (Fulham) -- and the
+# ceiling is not 100% for any adjacency rule, see NetworkBaseTexture. So this
+# gate is not tuned to catch a percent of drift; it catches the rule being
+# broken outright, which scores in the twenties.
+const MIN_BASE_TEXTURE_AGREEMENT : float = 0.70
+
+func _check_ground_layer(city, model) -> bool:
+    var tool = city.network_tool
+    var lots = city.lot_model
+    var renderer = city.get_node("Node3D").get_node_or_null("NetworkRenderer")
+    if tool == null or lots == null or renderer == null:
+        print("  note  no build tool, lot model or renderer in this scene")
+        return true
+
+    print("\n--- network ground layer ---")
+    var ok := true
+
+    # 1. The derived rule against the save's own base_texture, over every save
+    #    tile that still carries one. Tiles the earlier checks bulldozed are
+    #    gone from the model, which is fine -- this scores what is left.
+    var scored := 0
+    var agreed := 0
+    for cell in model.tiles.keys():
+        var tile = model.get_tile(cell)
+        if tile == null or tile.source != NetworkModel.SOURCE_SAVE:
+            continue
+        scored += 1
+        if NetworkBaseTexture.pick(cell, lots) == tile.base_texture:
+            agreed += 1
+    if scored == 0:
+        print("  note  no save tiles left to score the ground rule against")
+    else:
+        var rate : float = float(agreed) / float(scored)
+        if rate >= MIN_BASE_TEXTURE_AGREEMENT:
+            print("  ok    ground rule matches the save on %d of %d tiles (%.1f%%)"
+                % [agreed, scored, rate * 100.0])
+        else:
+            push_error("ground rule matches the save on only %d of %d tiles (%.1f%%, floor %.0f%%)"
+                % [agreed, scored, rate * 100.0, MIN_BASE_TEXTURE_AGREEMENT * 100.0])
+            ok = false
+
+    # 2. Open country gets no ground quad at all, and no geometry for one.
+    #    _find_clear_run is not enough here: it only avoids existing network
+    #    tiles, so it happily returns a run through a zoned district, where the
+    #    drag razes the lots under it and the lots still standing either side
+    #    correctly give the new road a kerb.
+    var clear = _find_rural_run(model, lots, city.size_w * 64, city.size_h * 64)
+    if clear == null:
+        print("  note  no run of open country left to draw on")
+    else:
+        var before_verts : int = _mesh_vertex_count(renderer.base_meshinst)
+        var clear_end := Vector2i(clear.x + DRAWN_RUN - 1, clear.y)
+        tool.draw_line(clear, clear_end, "Road")
+        var rural_bare := true
+        for x in range(clear.x, clear_end.x + 1):
+            var tile = model.get_tile(Vector2i(x, clear.y))
+            if tile != null and tile.base_texture != NetworkBaseTexture.NONE:
+                rural_bare = false
+        if rural_bare and _mesh_vertex_count(renderer.base_meshinst) == before_verts:
+            print("  ok    a road drawn in open country carries no ground quad")
+        else:
+            push_error("a road drawn away from every lot picked up a ground texture")
+            ok = false
+
+    # 3. A road drawn alongside a lot gets that lot's ground family, and the
+    #    geometry to draw it. This is the visible half of "complete".
+    var site = _find_cell_beside_lot(model, lots, city.size_w * 64, city.size_h * 64)
+    if site == null:
+        print("  note  no clear cell beside a lot to draw on")
+        return ok
+    var expected : int = NetworkBaseTexture.pick(site, lots)
+    var verts_before : int = _mesh_vertex_count(renderer.base_meshinst)
+    tool.draw_line(site, site, "Road")
+    var placed = model.get_tile(site)
+    if placed == null:
+        push_error("drawing beside a lot at %s placed no tile" % site)
+        return false
+    if placed.base_texture != expected:
+        push_error("tile beside a lot at %s got ground 0x%08X, expected 0x%08X"
+            % [site, placed.base_texture, expected])
+        ok = false
+    elif expected == NetworkBaseTexture.NONE:
+        push_error("cell %s was chosen as being beside a lot but derives no ground family" % site)
+        ok = false
+    else:
+        var verts_after : int = _mesh_vertex_count(renderer.base_meshinst)
+        if verts_after > verts_before:
+            print("  ok    a road drawn beside a lot took ground 0x%08X and %d vertices of geometry"
+                % [expected, verts_after - verts_before])
+        else:
+            push_error("tile at %s claims ground 0x%08X but the layer gained no geometry"
+                % [site, expected])
+            ok = false
+
+    # 4. Bulldozing takes the ground quad with it. A ground quad left behind is
+    #    a sidewalk floating on bare terrain -- and it is a separate mesh from
+    #    the piece, so nothing else in the harness would notice.
+    var verts_placed : int = _mesh_vertex_count(renderer.base_meshinst)
+    tool.bulldoze([site])
+    var verts_gone : int = _mesh_vertex_count(renderer.base_meshinst)
+    if verts_gone < verts_placed:
+        print("  ok    bulldozing took the ground quad with it (%d -> %d vertices)"
+            % [verts_placed, verts_gone])
+    else:
+        push_error("bulldozing %s left its ground quad behind (%d -> %d vertices)"
+            % [site, verts_placed, verts_gone])
+        ok = false
+    return ok
+
+# A horizontal run of empty cells with no network tile AND no lot anywhere in
+# the band the ground rule looks at, so a road drawn along it is genuinely in
+# open country rather than in a district whose lots the drag just razed.
+func _find_rural_run(model, lots, map_w : int, map_h : int):
+    for z in range(4, map_h - 4):
+        for x in range(4, map_w - DRAWN_RUN - 4):
+            var clear := true
+            for dx in range(-2, DRAWN_RUN + 2):
+                for dz in range(-2, 3):
+                    var cell := Vector2i(x + dx, z + dz)
+                    if model.has_tile(cell) or lots.has_lot(cell):
+                        clear = false
+                        break
+                if not clear:
+                    break
+            if clear:
+                return Vector2i(x, z)
+    return null
+
+# A clear cell, with clear orthogonal neighbours, that has at least one lot in
+# its 3x3 neighbourhood -- so a road drawn on it derives a ground family without
+# the drag flattening the lot that gave it one.
+func _find_cell_beside_lot(model, lots, map_w : int, map_h : int):
+    for z in range(4, map_h - 4):
+        for x in range(4, map_w - 4):
+            var cell := Vector2i(x, z)
+            if model.has_tile(cell) or lots.has_lot(cell):
+                continue
+            var clear := true
+            for d in [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]:
+                if model.has_tile(cell + d):
+                    clear = false
+                    break
+            if not clear:
+                continue
+            if NetworkBaseTexture.pick(cell, lots) != NetworkBaseTexture.NONE:
+                return cell
+    return null
+
 func _mesh_vertex_count(node) -> int:
     if node == null or node.mesh == null or node.mesh.get_surface_count() == 0:
         return 0
@@ -817,6 +982,604 @@ func _check_against_simulation(city, model, graph) -> bool:
             % [covered * 100.0, missing.slice(0, 5)])
         ok = false
     return ok
+
+# SimGrids and the data views built on them. Three layers of checks: every
+# grid record of the save parses cleanly, the DataView catalogue reads SC4's
+# own view exemplars out of the DATs, and decoding the occupant-code grid
+# still reproduces each lot's wealth class -- which is how that grid was
+# identified in the first place (single-valued crosstab over all 12 populated
+# saves). If a refactor transposes an axis or misreads a header offset, the
+# agreement collapses long before anything looks wrong on screen. Vacant
+# cells (code 0 under a lot: abandonment) are excluded -- they carry no
+# wealth to agree with.
+const MIN_WEALTH_AGREEMENT : float = 0.95
+const MIN_WEALTH_SAMPLES : int = 200
+
+func _check_data_views(city) -> bool:
+    print("\n--- sim grids and data views ---")
+    var ok := true
+
+    # 1. Parse health: every record accounted for, every grid well-formed.
+    var model = city.sim_grids_model()
+    if model.layout_failures > 0:
+        push_error("%d SimGrid records failed header validation" % model.layout_failures)
+        ok = false
+    if model.size() == 0:
+        print("  note  no SimGrid layers in this save, skipping")
+        return ok
+    var malformed := 0
+    for data_id in model.grids.keys():
+        var grid = model.grids[data_id]
+        if grid.width != grid.height or grid.width <= 0 \
+                or model.map_tiles % grid.width != 0 \
+                or grid.values.size() != grid.width * grid.height:
+            push_error("grid %08X is malformed: %dx%d, %d cells, map %d tiles"
+                % [data_id, grid.width, grid.height, grid.values.size(), model.map_tiles])
+            malformed += 1
+    if malformed == 0:
+        print("  ok    %d SimGrid layers parse cleanly" % model.size())
+    else:
+        ok = false
+
+    # 2. The DataView catalogue reads SC4's own view definitions from the DATs.
+    var catalogue = DataViewCatalogue.new()
+    var n_views : int = catalogue.load_from_core()
+    var land_view = catalogue.view_named("Land value")
+    if land_view == null:
+        push_error("catalogue has no 'Land value' view (%d views loaded)" % n_views)
+        return false
+    var opaque_stops := 0
+    for stop in land_view.ramp:
+        if stop["color"].a > 0.0:
+            opaque_stops += 1
+    if land_view.ramp.size() >= 2 and opaque_stops > 0 \
+            and land_view.data_id == SimGridSubfile.OCCUPANT_CODE:
+        print("  ok    catalogue: %d views, Land value ramp has %d stops"
+            % [n_views, land_view.ramp.size()])
+    else:
+        push_error("Land value view is malformed: %d ramp stops, %d visible, dataId %08X"
+            % [land_view.ramp.size(), opaque_stops, land_view.data_id])
+        ok = false
+
+    # 3. The identification gate: decoding the occupant-code grid must
+    # reproduce each lot's wealth class.
+    if not model.has(SimGridSubfile.OCCUPANT_CODE):
+        print("  note  no occupant-code grid in this save, skipping the wealth check")
+        return ok
+    if city.lot_model == null:
+        print("  note  no lots in this save, skipping the wealth check")
+        return ok
+    var sampled := 0
+    var agreed := 0
+    var mismatches : Array = []
+    for cell in city.lot_model.by_cell.keys():
+        var lot = city.lot_model.lot_at(cell)
+        if lot == null:
+            continue
+        var code : int = int(model.value_at_tile(SimGridSubfile.OCCUPANT_CODE, cell.x, cell.y))
+        if code == 0:
+            continue    # vacant/abandoned under a zoned lot
+        sampled += 1
+        if SimGridSubfile.OCCUPANT_CODE_WEALTH.get(code, 0) == lot.zone_wealth:
+            agreed += 1
+        elif mismatches.size() < 5:
+            mismatches.append("%s code %d wealth %d" % [cell, code, lot.zone_wealth])
+    if sampled < MIN_WEALTH_SAMPLES:
+        print("  note  only %d occupied lot tiles -- wealth check not meaningful, skipping" % sampled)
+        return ok
+    var agreement : float = float(agreed) / float(sampled)
+    if agreement >= MIN_WEALTH_AGREEMENT:
+        print("  ok    occupant-code grid reproduces lot wealth on %.1f%% of %d tiles"
+            % [agreement * 100.0, sampled])
+    else:
+        push_error("occupant-code grid only reproduces lot wealth on %.1f%% of %d tiles (want >= %.0f%%); e.g. %s"
+            % [agreement * 100.0, sampled, MIN_WEALTH_AGREEMENT * 100.0, mismatches])
+        ok = false
+
+    ok = _check_zone_grid(city, model) and ok
+    ok = _check_flammability_grids(city, model) and ok
+    return ok
+
+# The zone-type grid (0x41800000) stores each tile's lot zone_type verbatim
+# -- the crosstab is single-valued on every populated save, >= 99.6% of lot
+# tiles agreeing (the stragglers are tiles two overlapping lot rects claim).
+const MIN_ZONE_AGREEMENT : float = 0.99
+
+func _check_zone_grid(city, model) -> bool:
+    if not model.has(SimGridSubfile.ZONE_TYPE) or city.lot_model == null:
+        print("  note  no zone-type grid or no lots, skipping the zone check")
+        return true
+    var agreed := 0
+    var checked := 0
+    for cell in city.lot_model.by_cell.keys():
+        var lot = city.lot_model.lot_at(cell)
+        if lot == null:
+            continue
+        checked += 1
+        if int(model.value_at_tile(SimGridSubfile.ZONE_TYPE, cell.x, cell.y)) == lot.zone_type:
+            agreed += 1
+    if checked < MIN_WEALTH_SAMPLES:
+        print("  note  only %d lot tiles -- zone-grid check not meaningful, skipping" % checked)
+        return true
+    var rate : float = float(agreed) / float(checked)
+    if rate >= MIN_ZONE_AGREEMENT:
+        print("  ok    zone-type grid matches lot zoning on %.1f%% of %d tiles" % [rate * 100.0, checked])
+        return true
+    push_error("zone-type grid matches lot zoning on only %.1f%% of %d tiles (floor %.0f%%)"
+        % [rate * 100.0, checked, MIN_ZONE_AGREEMENT * 100.0])
+    return false
+
+# The flammability pair: FLAMMABILITY_BASE holds each building exemplar's
+# "Flammability" property (0x29244DB5, inherited from the family cohort)
+# stamped over its lot; exact per-tile agreement runs 0.66 (Tegel) to 0.95
+# (Rush Hour) across the saves -- the gap is small decays and garden tiles
+# carrying their trees' value -- so the floor sits at 0.60. The EFFECTIVE
+# twin is BASE * 1.25 (the summer multiplier) on >= 99% of nonzero cells.
+const MIN_FLAMMABILITY_AGREEMENT : float = 0.60
+const MIN_FLAMMABILITY_PAIR : float = 0.98
+const PROP_FLAMMABILITY : int = 0x29244db5
+
+func _check_flammability_grids(city, model) -> bool:
+    var base = model.grid(SimGridSubfile.FLAMMABILITY_BASE)
+    var eff = model.grid(SimGridSubfile.FLAMMABILITY_EFFECTIVE)
+    if base == null or eff == null or city.lot_model == null or city.building_records.is_empty():
+        print("  note  no flammability grids, lots or buildings, skipping")
+        return true
+    var ok := true
+
+    # Building flammability stamped over its lot rect vs the base grid.
+    var flam_by_cell := {}
+    for rec in city.building_records:
+        var f = Core.exemplar_prop(rec.exemplar_tgi[1], rec.exemplar_tgi[2], PROP_FLAMMABILITY)
+        if f != null:
+            flam_by_cell[PollutionSim.occupant_cell(rec)] = f
+    var agreed := 0
+    var checked := 0
+    for lot in city.lot_model.lots:
+        var expected = null
+        for cell in LotModel.cells_of(lot):
+            if flam_by_cell.has(cell):
+                expected = flam_by_cell[cell]
+                break
+        if expected == null:
+            continue
+        for cell in LotModel.cells_of(lot):
+            var v : int = int(base.at_tile(cell.x, cell.y, model.map_tiles))
+            if v == 0:
+                continue
+            checked += 1
+            if v == int(expected):
+                agreed += 1
+    if checked < MIN_WEALTH_SAMPLES:
+        print("  note  only %d flammable lot tiles -- flammability check not meaningful" % checked)
+    else:
+        var rate : float = float(agreed) / float(checked)
+        if rate >= MIN_FLAMMABILITY_AGREEMENT:
+            print("  ok    flammability grid matches building exemplars on %.1f%% of %d tiles"
+                % [rate * 100.0, checked])
+        else:
+            push_error("flammability grid matches building exemplars on only %.1f%% of %d tiles (floor %.0f%%)"
+                % [rate * 100.0, checked, MIN_FLAMMABILITY_AGREEMENT * 100.0])
+            ok = false
+
+    # The pair relation: base = 0.8 * effective (within u8 rounding), or the
+    # two equal where the seasonal factor is not applied.
+    var pair_ok := 0
+    var pair_n := 0
+    for i in range(eff.values.size()):
+        var e : float = eff.values[i]
+        if e == 0:
+            continue
+        pair_n += 1
+        var b : float = base.values[i]
+        if absf(b - 0.8 * e) <= 1.0 or b == e:
+            pair_ok += 1
+    if pair_n > 0:
+        var pair_rate : float = float(pair_ok) / float(pair_n)
+        if pair_rate >= MIN_FLAMMABILITY_PAIR:
+            print("  ok    flammability pair holds base = 0.8 x effective on %.1f%% of %d cells"
+                % [pair_rate * 100.0, pair_n])
+        else:
+            push_error("flammability pair relation holds on only %.1f%% of %d cells (floor %.0f%%)"
+                % [pair_rate * 100.0, pair_n, MIN_FLAMMABILITY_PAIR * 100.0])
+            ok = false
+    return ok
+
+# The wealth data view renders from the LIVE lot model, not the saved grid:
+# razing a lot must recolour its tiles to vacant. Guard that wiring end to
+# end -- activate the view, raze a wealthy growable lot through the model
+# choke point, and require the repainted image to change to the vacant
+# colour on the lot's cell. Runs last in the chain because the raze is
+# permanent, like every other edit here. The repaint is normally deferred
+# and coalesced; the harness pumps it directly since _ready never yields.
+func _check_data_view_live(city) -> bool:
+    print("\n--- data view live update ---")
+    if city.lot_model == null:
+        print("  note  no lots in this save, skipping")
+        return true
+    # This check is about the WEALTH-CLASS rendering following lot edits; the
+    # simulated-gradient rendering (the default) is _check_simulation's
+    # business, so pin the source for the duration.
+    city.set_land_value_simulated(false)
+    if not city.set_data_view_named("Land value"):
+        push_error("could not activate the Land value data view")
+        city.set_land_value_simulated(true)
+        return false
+
+    # A growable lot with nonzero wealth, still standing at this point.
+    var target = null
+    for cell in city.lot_model.by_cell.keys():
+        var lot = city.lot_model.lot_at(cell)
+        if lot != null and LotModel.is_growable(lot) and lot.zone_wealth > 0:
+            target = lot
+            break
+    if target == null:
+        print("  note  no wealthy growable lot left to raze, skipping")
+        city.set_data_view(null)
+        return true
+
+    var view = city.data_view_active
+    var cell : Vector2i = LotModel.cells_of(target)[0]
+    var before : Color = city.data_view_image.get_pixel(cell.x, cell.y)
+    var expected_before : Color = view.color_for(
+        DataViewCatalogue.WEALTH_TO_LAND_VALUE[target.zone_wealth])
+    var expected_after : Color = view.color_for(DataViewCatalogue.WEALTH_TO_LAND_VALUE[0])
+
+    city.lot_model.remove([target])
+    city._repaint_data_view()
+    var after : Color = city.data_view_image.get_pixel(cell.x, cell.y)
+    city.set_data_view(null)
+
+    var ok := true
+    if not _colors_close(before, expected_before):
+        push_error("tile %s painted %s before the raze, expected wealth-%d colour %s"
+            % [cell, before, target.zone_wealth, expected_before])
+        ok = false
+    if not _colors_close(after, expected_after):
+        push_error("tile %s painted %s after the raze, expected vacant colour %s"
+            % [cell, after, expected_after])
+        ok = false
+    if ok:
+        print("  ok    razing the lot at %s recoloured it %s -> %s" % [cell, before, after])
+    city.set_land_value_simulated(true)
+    return ok
+
+# get_pixel round-trips through RGBA8, so compare with an 8-bit tolerance.
+func _colors_close(a : Color, b : Color) -> bool:
+    return abs(a.r - b.r) < 0.01 and abs(a.g - b.g) < 0.01 \
+        and abs(a.b - b.b) < 0.01 and abs(a.a - b.a) < 0.01
+
+# The simulation: clock, systems, derived fields and their gates. Runs LAST --
+# it steps months and razes a lot of its own, and like every other edit in
+# this harness those are permanent.
+#
+# What is gated and why:
+#   - fixed point: stepping with no edits must leave every derived field
+#     byte-identical. The simulators are stateless recomputes, so any drift
+#     is nondeterminism -- the bug class the plan's step 2 check exists for.
+#   - land value vs wealth: no save stores land value, so the calibration IS
+#     thresholding ours at the Land Value Sim wealth boundaries [70, 120] and
+#     comparing to each lot's zone_wealth. Fitted across all populated saves
+#     this scores mean 0.82, worst 0.57 (Rush Hour Tutorial), so the floor is
+#     0.50 (margin for the lots the earlier checks raze) -- the same
+#     "identify by agreement, then gate on it" move as the occupant-code
+#     grid, just against a simulated field instead of a decode table.
+#   - pollution structure: no saved target exists either (the plan's twin
+#     candidates decode as flammability), so the gate is the property that
+#     made SC4's field recognisable: industry outpollutes residential.
+#   - crime structure: same shape -- poor tiles outscore wealthy ones.
+#   - edit response: razing a polluting lot must lower total pollution and
+#     move land value on the next tick, which is the whole point of
+#     simulating rather than snapshotting.
+const MIN_LAND_VALUE_AGREEMENT : float = 0.50
+const SIM_FIXED_POINT_MONTHS : int = 3
+
+func _check_simulation(city) -> bool:
+    print("\n--- simulation ---")
+    var sim = city.simulation
+    if sim == null:
+        push_error("no simulation was set up for a loaded save")
+        return false
+    var ok := true
+
+    if sim.system_names() == ["traffic", "pollution", "land value", "crime"]:
+        print("  ok    systems registered in dependency order, month %d" % sim.month)
+    else:
+        push_error("systems out of order: %s" % [sim.system_names()])
+        ok = false
+
+    var grids = city.sim_grids_model()
+    for entry in [["traffic", SimGrids.DERIVED_TRAFFIC],
+            ["air pollution", SimGrids.DERIVED_AIR_POLLUTION],
+            ["land value", SimGrids.DERIVED_LAND_VALUE],
+            ["crime", SimGrids.DERIVED_CRIME],
+            ["police coverage", SimGrids.DERIVED_POLICE_COVERAGE]]:
+        if grids.grid(entry[1]) == null:
+            push_error("derived %s layer missing after the load tick" % entry[0])
+            ok = false
+    if not ok:
+        return false
+
+    # Fixed point under no edits. The load tick ran before this harness's
+    # tool checks razed lots and drew roads, so one settling step first --
+    # otherwise the first comparison step legitimately folds those edits in
+    # and reads as drift.
+    sim.step()
+    var before := {}
+    for id in grids.derived.keys():
+        before[id] = grids.derived[id].values.duplicate()
+    sim.step(SIM_FIXED_POINT_MONTHS)
+    var drifted : Array = []
+    for id in before.keys():
+        if grids.derived[id].values != before[id]:
+            drifted.append("%08X" % id)
+    if drifted.is_empty():
+        print("  ok    %d months with no edits left every derived field identical"
+            % SIM_FIXED_POINT_MONTHS)
+    else:
+        push_error("derived fields drifted with no edits: %s" % [drifted])
+        ok = false
+
+    ok = _check_land_value_agreement(city, grids) and ok
+    ok = _check_pollution_structure(city, grids) and ok
+    ok = _check_crime_structure(city, grids) and ok
+    ok = _check_traffic_assignment(city, grids) and ok
+    ok = _check_simulation_edit_response(city, grids, sim) and ok
+    return ok
+
+# The commute assignment against SC4's own saved car volumes. Shape, not
+# magnitude: everywhere WE route traffic must be somewhere SC4 recorded car
+# traffic (precision -- routing down a railway or through a field would
+# break this), and busier-vs-quieter must broadly agree (rank correlation
+# over the shared footprint). Recall is deliberately NOT gated: one
+# shortest path per lot concentrates flow on trunk routes and leaves side
+# streets empty, which SC4's capacity-aware multi-path assignment does not.
+# Save tiles only -- roads the harness itself drew have no saved volume.
+const MIN_TRAFFIC_PRECISION : float = 0.85
+const MIN_TRAFFIC_RANK_CORRELATION : float = 0.10
+
+func _check_traffic_assignment(city, grids) -> bool:
+    var ours = grids.grid(SimGrids.DERIVED_TRAFFIC)
+    var theirs = grids.grid(SimGridSubfile.TRAFFIC_CAR)
+    var model = city.network_model
+    if ours == null or theirs == null or model == null:
+        print("  note  no assignment or no saved car-traffic grid to compare")
+        return true
+    var side : int = grids.map_tiles
+    var our_vals : Array = []
+    var their_vals : Array = []
+    var on_traffic := 0
+    var routed := 0
+    for cell in model.tiles.keys():
+        if model.get_tile(cell).source != NetworkModel.SOURCE_SAVE:
+            continue
+        var o : float = ours.at_tile(cell.x, cell.y, side)
+        var t : float = theirs.at_tile(cell.x, cell.y, side)
+        if o > 0.0:
+            routed += 1
+            if t > 0.0:
+                on_traffic += 1
+                our_vals.append(o)
+                their_vals.append(t)
+    if routed == 0:
+        # Legitimate on job-less or road-less saves; everywhere else it means
+        # the demand model found nothing, which the structure checks would
+        # already have flagged as all-zero pollution from traffic.
+        print("  note  the assignment routed no traffic (no residential-to-job path?)")
+        return true
+    var ok := true
+    var precision : float = float(on_traffic) / float(routed)
+    if precision >= MIN_TRAFFIC_PRECISION:
+        print("  ok    %.1f%% of our %d trafficked save tiles carry SC4 car traffic too"
+            % [precision * 100.0, routed])
+    else:
+        push_error("only %.1f%% of our %d trafficked tiles carry SC4 car traffic (floor %.0f%%)"
+            % [precision * 100.0, routed, MIN_TRAFFIC_PRECISION * 100.0])
+        ok = false
+    if our_vals.size() >= 100:
+        var rho : float = _spearman(our_vals, their_vals)
+        if rho >= MIN_TRAFFIC_RANK_CORRELATION:
+            print("  ok    volume rank correlation with SC4 is %.3f over %d shared tiles"
+                % [rho, our_vals.size()])
+        else:
+            push_error("volume rank correlation %.3f below the %.2f floor (%d shared tiles)"
+                % [rho, MIN_TRAFFIC_RANK_CORRELATION, our_vals.size()])
+            ok = false
+    else:
+        print("  note  only %d shared trafficked tiles -- rank correlation skipped" % our_vals.size())
+    return ok
+
+static func _spearman(a : Array, b : Array) -> float:
+    var ra := _ranks(a)
+    var rb := _ranks(b)
+    var n : int = ra.size()
+    var ma : float = 0.0
+    var mb : float = 0.0
+    for i in range(n):
+        ma += ra[i]
+        mb += rb[i]
+    ma /= n
+    mb /= n
+    var cov : float = 0.0
+    var va : float = 0.0
+    var vb : float = 0.0
+    for i in range(n):
+        cov += (ra[i] - ma) * (rb[i] - mb)
+        va += (ra[i] - ma) * (ra[i] - ma)
+        vb += (rb[i] - mb) * (rb[i] - mb)
+    if va == 0.0 or vb == 0.0:
+        return 0.0
+    return cov / sqrt(va * vb)
+
+# Average ranks with ties shared, matching the offline calibration scripts.
+static func _ranks(v : Array) -> Array:
+    var order : Array = range(v.size())
+    order.sort_custom(func(x, y): return v[x] < v[y])
+    var ranks : Array = []
+    ranks.resize(v.size())
+    var i : int = 0
+    while i < order.size():
+        var j : int = i
+        while j + 1 < order.size() and v[order[j + 1]] == v[order[i]]:
+            j += 1
+        var avg : float = (i + j) / 2.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+func _check_land_value_agreement(city, grids) -> bool:
+    if city.lot_model == null:
+        print("  note  no lots to score land value against")
+        return true
+    var agreed := 0
+    var checked := 0
+    for cell in city.lot_model.by_cell.keys():
+        var lot = city.lot_model.lot_at(cell)
+        if lot == null or lot.zone_wealth == 0:
+            continue
+        checked += 1
+        var value : float = grids.value_at_tile(SimGrids.DERIVED_LAND_VALUE, cell.x, cell.y)
+        if LandValueSim.wealth_class(value) == lot.zone_wealth:
+            agreed += 1
+    if checked < MIN_WEALTH_SAMPLES:
+        print("  note  only %d wealthy lot tiles -- land-value agreement not meaningful" % checked)
+        return true
+    var rate : float = float(agreed) / float(checked)
+    if rate >= MIN_LAND_VALUE_AGREEMENT:
+        print("  ok    simulated land value reproduces lot wealth on %.1f%% of %d tiles"
+            % [rate * 100.0, checked])
+        return true
+    push_error("simulated land value reproduces lot wealth on only %.1f%% of %d tiles (floor %.0f%%)"
+        % [rate * 100.0, checked, MIN_LAND_VALUE_AGREEMENT * 100.0])
+    return false
+
+# DIRTY industrial tiles (zones 8-9) must, on average, sit in a dirtier
+# field than residential ones. Zone 7 is agriculture and does not count --
+# farms barely pollute, and on farming saves (Tegel, Kensington) lumping
+# them in drags the "industry" mean below residential-street traffic.
+# Both cohorts need enough tiles for a mean to mean anything.
+func _check_pollution_structure(city, grids) -> bool:
+    if city.lot_model == null:
+        print("  note  no lots to check pollution structure against")
+        return true
+    var sums := {"industry": 0.0, "residential": 0.0}
+    var counts := {"industry": 0, "residential": 0}
+    for cell in city.lot_model.by_cell.keys():
+        var lot = city.lot_model.lot_at(cell)
+        if lot == null:
+            continue
+        var kind : String
+        if lot.zone_type >= 8 and lot.zone_type <= 9:
+            kind = "industry"
+        elif lot.zone_type >= 1 and lot.zone_type <= 3:
+            kind = "residential"
+        else:
+            continue
+        sums[kind] += grids.value_at_tile(SimGrids.DERIVED_AIR_POLLUTION, cell.x, cell.y)
+        counts[kind] += 1
+    if counts["industry"] < 50 or counts["residential"] < 50:
+        print("  note  too few dirty-industry/residential tiles (%d/%d) for the pollution check"
+            % [counts["industry"], counts["residential"]])
+        return true
+    var ind_mean : float = sums["industry"] / counts["industry"]
+    var res_mean : float = sums["residential"] / counts["residential"]
+    if ind_mean > res_mean:
+        print("  ok    industry sits in a dirtier air field than residential (%.0f vs %.0f over %d/%d tiles)"
+            % [ind_mean, res_mean, counts["industry"], counts["residential"]])
+        return true
+    push_error("air pollution means: industry %.1f <= residential %.1f" % [ind_mean, res_mean])
+    return false
+
+func _check_crime_structure(city, grids) -> bool:
+    if city.lot_model == null:
+        print("  note  no lots to check crime structure against")
+        return true
+    var sums := {1: 0.0, 3: 0.0}
+    var counts := {1: 0, 3: 0}
+    for cell in city.lot_model.by_cell.keys():
+        var lot = city.lot_model.lot_at(cell)
+        if lot == null or not counts.has(lot.zone_wealth):
+            continue
+        sums[lot.zone_wealth] += grids.value_at_tile(SimGrids.DERIVED_CRIME, cell.x, cell.y)
+        counts[lot.zone_wealth] += 1
+    if counts[1] < 50 or counts[3] < 50:
+        print("  note  too few $/$$$ tiles (%d/%d) for the crime check" % [counts[1], counts[3]])
+        return true
+    var poor : float = sums[1] / counts[1]
+    var rich : float = sums[3] / counts[3]
+    if poor > rich:
+        print("  ok    crime is higher on $ tiles than $$$ tiles (%.0f vs %.0f over %d/%d)"
+            % [poor, rich, counts[1], counts[3]])
+        return true
+    push_error("crime means: $ %.1f <= $$$ %.1f" % [poor, rich])
+    return false
+
+# Razing a polluting lot and stepping must lower total air pollution and
+# change the land-value field. Needs a growable lot whose building actually
+# pollutes; without one the response cannot be asserted.
+func _check_simulation_edit_response(city, grids, sim) -> bool:
+    if city.lot_model == null:
+        print("  note  no lots to raze for the edit-response check")
+        return true
+    var victim = null
+    var victim_cell := Vector2i.ZERO
+    for rec in city.building_records:
+        var centre = Core.exemplar_prop(rec.exemplar_tgi[1], rec.exemplar_tgi[2], 0x27812851)
+        var radius = Core.exemplar_prop(rec.exemplar_tgi[1], rec.exemplar_tgi[2], 0x68EE9764)
+        if typeof(centre) != TYPE_ARRAY or centre.is_empty() \
+                or typeof(radius) != TYPE_ARRAY or radius.is_empty():
+            continue
+        var mag : int = centre[0]
+        # The building must actually stamp: positive magnitude (not zero, not
+        # a negative absorber) AND a nonzero radius -- farm sheds carry air 1
+        # radius 0, which contributes nothing and cannot respond to a raze.
+        if mag == 0 or mag >= 0x80000000 or radius[0] <= 0.0:
+            continue
+        var cell : Vector2i = PollutionSim.occupant_cell(rec)
+        # And its tile must sit INSIDE the clamp range: on a farm belt the
+        # crop fields absorb more than the shed emits, the whole area floors
+        # at 0, and razing one emitter moves nothing; a cell pinned at the
+        # 1024 ceiling by neighbouring industry likewise cannot fall.
+        var value : float = grids.value_at_tile(SimGrids.DERIVED_AIR_POLLUTION, cell.x, cell.y)
+        if value <= 0.5 or value >= 1000.0:
+            continue
+        var lot = city.lot_model.lot_at(cell)
+        if lot != null and LotModel.is_growable(lot):
+            victim = lot
+            victim_cell = cell
+            break
+    if victim == null:
+        print("  note  no growable lot with a visibly polluting building left to raze")
+        return true
+
+    var air_before : float = grids.value_at_tile(SimGrids.DERIVED_AIR_POLLUTION,
+        victim_cell.x, victim_cell.y)
+    var land_before : Array = grids.grid(SimGrids.DERIVED_LAND_VALUE).values.duplicate()
+    city.lot_model.remove([victim])
+    sim.step()
+    var air_after : float = grids.value_at_tile(SimGrids.DERIVED_AIR_POLLUTION,
+        victim_cell.x, victim_cell.y)
+    var land_after : Array = grids.grid(SimGrids.DERIVED_LAND_VALUE).values
+    var ok := true
+    if air_after < air_before:
+        print("  ok    razing the polluting lot at %s lowered air there (%.1f -> %.1f)"
+            % [victim_cell, air_before, air_after])
+    else:
+        push_error("air pollution at %s did not fall after razing its polluting lot (%.1f -> %.1f)"
+            % [victim_cell, air_before, air_after])
+        ok = false
+    # Land value CAN legitimately hold still: the neighbourhood-wealth term
+    # is a mean over developed cells, so razing a wealth-1 lot inside a
+    # uniformly wealth-1 district removes cells without moving any window's
+    # mean (Tegel's farm belt does exactly this). Moved = good signal;
+    # unmoved = only a note.
+    if land_after != land_before:
+        print("  ok    the land-value field moved in response")
+    else:
+        print("  note  land value unchanged -- razed lot's neighbourhood is uniform wealth")
+    return ok
+
 
 # Rail-only tiles must carry Train arcs and no Car arcs. If the class tag were
 # dropped somewhere every network would look alike, and routing would happily

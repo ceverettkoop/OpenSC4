@@ -27,6 +27,11 @@ extends Node
 #   pipes     reveal the underground water pipes
 #   graph     draw the transport graph over the city (vehicle lanes)
 #   walking   as graph, plus the pedestrian lanes
+#   landvalue paint the land-value data view onto the terrain (the simulated
+#             continuous field; "wealth" for the saved wealth-class render)
+#   wealth    the Land value view from live lot wealth classes instead
+#   airpollution / crime   the corresponding simulated-field data views
+#   months:N  step the simulation N months before shooting
 #   hold      aim at the first shot and STAY OPEN instead of capturing/quitting
 #   draw:x1,z1,x2,z2   lay a road through the build tool before shooting
 #   del:x1,z1,x2,z2    bulldoze that box before shooting
@@ -70,6 +75,10 @@ func _ready():
     var show_pipes = false
     var show_graph = false
     var show_walking = false
+    var show_landvalue = false
+    var show_wealth_classes = false
+    var show_view = ""
+    var step_months = 0
     var edits : Array = []
     if user_args.size() >= 3:
         region = user_args[1]
@@ -86,6 +95,28 @@ func _ready():
             if user_args[i] == "walking":
                 show_graph = true
                 show_walking = true
+                continue
+            # Data-view keywords: "landvalue" is the simulated continuous
+            # field (the default source), "wealth" the same view from live
+            # lot wealth classes, the rest the other simulated fields --
+            # each through SC4's own ramp.
+            if user_args[i] == "landvalue":
+                show_landvalue = true
+                continue
+            if user_args[i] == "wealth":
+                show_landvalue = true
+                show_wealth_classes = true
+                continue
+            if user_args[i] == "airpollution":
+                show_view = "Air Pollution"
+                continue
+            if user_args[i] == "crime":
+                show_view = "Crime"
+                continue
+            # "months:N" advances the simulation clock before the shot, so a
+            # field's response to draw:/del: edits can be captured.
+            if user_args[i].begins_with("months:"):
+                step_months = int(user_args[i].split(":")[1])
                 continue
             # Already picked up before the city name was parsed; swallow it here
             # so it is not mistaken for a shot spec.
@@ -141,6 +172,20 @@ func _ready():
             city.toggle_graph_debug_pedestrians()
         city.set_graph_debug_visible(true)
         print("Graph overlay: %s" % city.network_debug.stats())
+    if step_months > 0 and city.simulation != null:
+        city.simulation.step(step_months)
+        print("Simulation stepped %d month(s), month %d" % [step_months, city.simulation.month])
+    if show_landvalue:
+        city.set_land_value_simulated(not show_wealth_classes)
+        if not city.set_data_view_named("Land value"):
+            push_error("No renderable 'Land value' data view")
+            get_tree().quit(1)
+            return
+    elif show_view != "":
+        if not city.set_data_view_named(show_view):
+            push_error("No renderable '%s' data view" % show_view)
+            get_tree().quit(1)
+            return
 
     var cam = city.get_node("CameraHandler")
     var half = city.size_w * 64 / 2.0    # world units are tiles

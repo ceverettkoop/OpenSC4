@@ -50,7 +50,9 @@ OpenSC4 is an open-source **Godot 4.7 (GDScript)** reimplementation of *SimCity 
   path, then saves `city_zoom1.png` (whole map) and `city_zoom4.png` (map centre,
   close-up) to `<out_dir>` and quits; ends with `SCREENSHOTS DONE`. Use it to eyeball
   placement/rendering changes. After the city name it also takes shot specs
-  `tx,tz,zoom[,rot][,name]` and the bare keywords `pipes`, `graph`, `walking` and `hold`.
+  `tx,tz,zoom[,rot][,name]` and the bare keywords `pipes`, `graph`, `walking`, `landvalue`
+  (simulated gradient), `wealth` (saved wealth classes), `airpollution`, `crime`,
+  `months:N` (step the simulation before shooting) and `hold`.
   Under Xvfb add `--rendering-driver opengl3`.
 - The same harness doubles as a **viewer**: `hold` aims at the first shot spec and then
   leaves the window open and interactive instead of capturing and quitting (it prints
@@ -106,9 +108,34 @@ Everything flows through this singleton.
   (vehicle paths — see below), `CURSubfile` (cursors), `INISubfile`.
 - **SimGrids** (`SimGridSubfile`, city-save types `0x49B9E602/03/04/05/06/0A`) — the per-tile
   simulation layers behind every data view. One subfile holds many grids keyed by `dataId`;
-  cells are **column-major, `index = x * height + z`**. Loaded on demand via
-  `City.load_sim_grids()`, not at city load. The traffic layers are SC4's own simulation
-  output and are used as ground truth for the network graph — see `dev_notes` §11.
+  cells are **column-major, `index = x * height + z`**. Modeled by `CityView/SimGrids.gd`
+  (`City.sim_grids_model()`, lazy; `load_sim_grids()` is the legacy dict view). The traffic
+  layers are SC4's own simulation output and are used as ground truth for the network graph
+  (`dev_notes` §11). Identified (each with a harness gate): `TRAFFIC_*` (5), `OCCUPANT_CODE`
+  (`0x49D5B678`, occupant codes → wealth 0–3 via `OCCUPANT_CODE_WEALTH`, 100% agreement with
+  lot `zone_wealth`), `FLAMMABILITY_BASE/EFFECTIVE` (`0x49D5B964/53`, building exemplars'
+  Flammability over lot rects; effective = base × the 1.25 summer multiplier) and
+  `ZONE_TYPE` (`0x41800000`, lot zone_type verbatim). **No shipped save stores any pollution,
+  land-value, crime or desirability field** — SC4 recomputes them at load, and OpenSC4 now
+  does too (see Simulation below). `SimGrids` also owns the writable **derived** layers the
+  simulators produce (`DERIVED_*` ids, `commit_derived`, `grids_changed`). See `dev_notes`
+  §11–§13.
+- **Data views** (`CityView/DataViewCatalogue.gd`): SC4's own view exemplars (group
+  `0x690F693F`, colour ramps + "Maximum scale" included) read from the DATs; their "Data
+  source" is a private enum, NOT a dataId — known pairs are hand-curated in
+  `DATA_SOURCE_TO_GRID`, except Crime/Police, which share enum 4 and are wired by name
+  (`NAME_TO_GRID`). `City.set_data_view` paints a view through its ramp into a per-tile
+  lookup texture on the terrain shader (`data_view_tex`/`data_view_on`, off by default) and
+  hides the occupant roots while active (networks stay). **The Land value view renders the
+  simulated continuous field by default** (`City.land_value_simulated`; repaints off
+  `grids_changed`), or the live per-lot wealth classes when toggled off
+  (`set_land_value_simulated(false)`, follows `lots_changed`) — the saved occupant-code grid
+  is only the load-time gate. Air Pollution/Crime/Police render their derived fields (the
+  air view maps its 0..1024 domain onto ramp stops 128..255); other views read their saved
+  grids. **V** cycles views, skipping mapped views whose layer holds no data;
+  `set_data_view_named(...)` is the harness entry; the screenshot harness takes `landvalue`,
+  `wealth`, `airpollution`, `crime` and `months:N` keywords. The roadmap is
+  `dev_notes/simulation_plan.md` (steps 1–4 done, step 5 remains).
 - **SC4Path (0x296678F7)** — a **plain text** format (CRLF), and the network's connectivity.
   One file per network *piece*: which lanes cross that tile, which edge each enters and
   leaves by (0..3 WNES, 255 = ends inside the tile), and for which class (1 Car, 2 Sim,
@@ -234,6 +261,29 @@ Everything flows through this singleton.
   occupants are freed outright rather than kept for a restore.
   **Not implemented:** the draw preview highlights the road but not the lots it is about
   to flatten (the bulldoze preview does show them, whole lots included).
+- **Simulation** (`CityView/Simulation.gd` + `CityView/Sim/`): the game clock and the field
+  simulators — `dev_notes/simulation_plan.md` steps 2–4, executed 2026-08-07 (session log:
+  `dev_notes/save_file_analysis` §13). `Simulation` is a monthly tick owned by City
+  (`city.simulation`, systems kept in `city.sim_systems`); systems run in dependency order
+  **traffic → pollution → land value → crime**, each reading the models (LotModel,
+  `building_records`, NetworkModel/graph) and committing whole derived fields into
+  `SimGrids` (`DERIVED_*`), off whose `grids_changed` the data views repaint. The clock
+  starts **paused**; **Space** cycles pause/1x/3x (5 s per month at 1x); one tick runs at
+  city load so the fields exist; harnesses call `simulation.step()` directly and never rely
+  on frame time. Simulation properties (pollution magnitudes/radii, flammability, police
+  coverage) live on the building FAMILY'S COHORT, not its exemplar — `Core.exemplar_prop`
+  walks the parent chain (CQZB cohort support in `ExemplarSubfile`). What is SC4's data vs
+  our invention is documented per file: Land Value Sim exemplar curves + boundaries [70,120]
+  and Traffic Simulator speeds are authentic; `PollutionSim.SOURCE_SCALE` (2.0),
+  `LandValueSim` base 5 / neighbourhood-wealth ×45 / pollution −30 (fitted offline: mean
+  0.82 / worst 0.57 wealth agreement) and the crime scaling are ours. TrafficSim assigns one
+  commute per residential lot to the nearest job via one backwards multi-source Dijkstra +
+  gradient descent over car arcs. Harness gates (`_check_simulation`): fixed point over 3
+  edit-free months (byte-identical fields), land value ≥0.50 agreement, dirty industry
+  (zones 8–9 ONLY — zone 7 farms absorb) outpollutes residential, $ crime > $$$ crime,
+  traffic precision ≥0.85 + rank correlation ≥0.10 vs `TRAFFIC_CAR`, and razing a polluting
+  lot lowers the field at its tile (the victim must stamp positively AND sit inside the
+  clamp range). All 12 populated saves pass.
 - **DAT Explorer** (`DATExplorer/`): a `Tree` browser over loaded DBPF archives with TGI
   filters and subfile previews. Dev tool.
 

@@ -57,6 +57,20 @@ func _input(event):
         if city.has_method("toggle_graph_debug_pedestrians"):
             city.toggle_graph_debug_pedestrians()
         return
+    # Space cycles the simulation clock: paused -> 1x -> 3x -> paused.
+    if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_SPACE:
+        var city = get_parent()
+        if city.has_method("cycle_sim_speed"):
+            city.cycle_sim_speed()
+        return
+    # V cycles the terrain data views (wealth/land value etc.) -- SimGrid
+    # layers painted through SC4's own DataView colour ramps.
+    if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_V:
+        var city = get_parent()
+        if city.has_method("toggle_data_view"):
+            var on = city.toggle_data_view()
+            Log.info("Data view %s" % ("on" if on else "off"))
+        return
     if free_mode:
         _free_input(event)
         return
