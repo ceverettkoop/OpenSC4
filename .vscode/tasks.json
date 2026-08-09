@@ -1,0 +1,28 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run: Big City Tutorial",
+            "type": "shell",
+            "command": "/Applications/Godot.app/Contents/MacOS/Godot",
+            "args": [
+                "--path", ".",
+                "--resolution", "1600x900",
+                "res://tools/ScreenshotCity.tscn",
+                "--",
+                "hold",
+                "Timbuktu",
+                "Big City Tutorial"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            }
+        }
+    ]
+}

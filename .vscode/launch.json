@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "GDScript: Big City Tutorial (debug)",
+            "type": "godot",
+            "request": "launch",
+            "project": "${workspaceFolder}",
+            "editor_path": "/Applications/Godot.app/Contents/MacOS/Godot",
+            "scene": "res://tools/ScreenshotCity.tscn",
+            "additional_options": "--resolution 1600x900 -- hold \"Timbuktu\" \"Big City Tutorial\""
+        }
+    ]
+}
